@@ -100,11 +100,13 @@ private:
         auto state = std::make_shared<WaitState>();
         try {
             invoker(args, [state](int code, std::string data) noexcept {
+                const auto completed_at = std::chrono::steady_clock::now();
                 try {
                     std::lock_guard<std::mutex> lock(state->mutex);
                     if (state->completed) return;
                     state->response.code = code;
                     state->response.data = std::move(data);
+                    state->response.completed_at = completed_at;
                     state->completed = true;
                     state->condition.notify_one();
                 } catch (...) {
@@ -121,7 +123,7 @@ private:
 
     static LvSettingVolumePage3::VolumeResponse decode_volume(const LvSettingVolumePage3::Response &response)
     {
-        LvSettingVolumePage3::VolumeResponse result{response.code, -1, response.data};
+        LvSettingVolumePage3::VolumeResponse result{response.code, -1, response.data, response.completed_at};
         if (response.code != 0 || !parse_integer(response.data,
                                                  LvSettingVolumePage3::metric(LvSettingVolumePage3::LayoutMetric::MinVolume),
                                                  LvSettingVolumePage3::metric(LvSettingVolumePage3::LayoutMetric::MaxVolume),
@@ -150,10 +152,10 @@ public:
 
     static LvSettingVolumePage3::VolumeResponse read_volume()
     {
-        const auto revision = launcher_media_controls::begin_volume_operation();
-        auto result = decode_volume(invoke_default({"VolumeRead"}, std::chrono::milliseconds(3000)));
-        result.revision = revision;
-        return result;
+        const auto sample = launcher_media_controls::read_mixer_volume();
+        if (!volume_value_valid(sample.percent))
+            return {static_cast<int>(ErrorCode::Invalid), -1, "unable to read volume"};
+        return {0, sample.percent, {}, sample.observed_at};
     }
 
     // The persisted key is only a fallback: the launcher caches the mixer
@@ -189,11 +191,10 @@ public:
     {
         if (!volume_value_valid(value))
             return {static_cast<int>(ErrorCode::Invalid), -1, "volume out of range"};
-        const auto revision = launcher_media_controls::begin_volume_operation();
         const auto result = decode_volume(
             invoke_default({"VolumeWrite", std::to_string(value)}, std::chrono::milliseconds(3000)));
         if (result.code == 0 &&
-            launcher_media_controls::publish_mixer_volume(result.value, revision) != result.value)
+            launcher_media_controls::publish_mixer_volume({result.value, result.observed_at}) != result.value)
             launcher_media_controls::refresh_volume_cache();
         return result;
     }
@@ -537,8 +538,9 @@ void LvSettingVolumePage3::handle_volume_result(const ActiveRequest &request,
 
     const bool valid = result.code == 0 && settings_audio_com::volume_value_valid(result.value);
     if (request.kind == RequestKind::Read) {
-        const int current = launcher_media_controls::publish_mixer_volume(
-            valid ? result.value : -1, result.revision);
+        const int current = valid
+            ? launcher_media_controls::publish_mixer_volume({result.value, result.observed_at})
+            : launcher_media_controls::cached_volume();
         if (current >= 0) {
             original_volume_        = current;
             backend_volume_         = current;

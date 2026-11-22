@@ -7,9 +7,6 @@
 #include "launcher_media_controls.h"
 
 #include "hal_lvgl_bsp.h"
-#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
-#include "cp0_audio_volume_monitor.hpp"
-#endif
 #include "model/brightness_operation.hpp"
 #include "model/launcher_media_model.hpp"
 #include "model/setup_value_policy.hpp"
@@ -18,7 +15,6 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
-#include <cstdint>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -27,45 +23,18 @@ namespace {
 
 LauncherMediaControlsModel model;
 
-// These values are shared by the UI and the mixer worker. The revision
-// prevents an in-flight read from overwriting a newer Settings or OSD update.
+// Compare when the mixer values were observed, since a read can finish or
+// reach the UI in a different order than it started.
 struct VolumeCache {
     std::mutex mutex;
     int volume = -1;
-    std::uint64_t next_revision = 0;
-    std::uint64_t applied_revision = 0;
+    cp0::pulse::VolumeTime observed_at{};
 };
 
 VolumeCache volume_cache;
 
 constexpr int kStartupVolumeReadAttempts = 5;
 constexpr std::chrono::milliseconds kStartupVolumeReadInterval{400};
-
-int read_mixer_volume()
-{
-    int volume = -1;
-    try {
-        cp0_signal_audio_api({"VolumeRead"}, [&](int code, std::string data) {
-            int parsed = 0;
-            if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) volume = parsed;
-        });
-    } catch (...) {
-        return -1;
-    }
-    return volume;
-}
-
-void publish_volume_locked(int volume, std::uint64_t revision)
-{
-    volume_cache.volume = LauncherMediaControlsModel::clamp_percent(volume);
-    volume_cache.applied_revision = revision;
-}
-
-void refresh_mixer_volume()
-{
-    const auto revision = launcher_media_controls::begin_volume_operation();
-    launcher_media_controls::publish_mixer_volume(read_mixer_volume(), revision);
-}
 
 /* Keep the startup settle window for WirePlumber, then follow mixer events
  * on the same worker. Teardown joins it before the audio signal is released. */
@@ -134,6 +103,17 @@ private:
         return !stop_.load();
     }
 
+    void publish_if_running(cp0::pulse::VolumeSample sample)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!stop_.load()) launcher_media_controls::publish_mixer_volume(sample);
+    }
+
+    void refresh_mixer_volume()
+    {
+        publish_if_running(launcher_media_controls::read_mixer_volume(&stop_));
+    }
+
     void refresh_if_requested()
     {
         if (refresh_requested_.exchange(false) && !stop_.load())
@@ -143,33 +123,29 @@ private:
     void read_startup_volume()
     {
         int previous = -1;
-        int last_valid = -1;
-        std::uint64_t last_revision = 0;
+        cp0::pulse::VolumeSample last_valid;
         for (int attempt = 0; attempt < kStartupVolumeReadAttempts; ++attempt) {
             if (attempt > 0 && wait_for_stop(kStartupVolumeReadInterval))
                 return;
             if (stop_.load()) return;
 
-            const auto revision = launcher_media_controls::begin_volume_operation();
-            const int volume = read_mixer_volume();
-            if (volume < 0) {
+            const auto sample = launcher_media_controls::read_mixer_volume(&stop_);
+            if (sample.percent < 0) {
                 previous = -1;
                 continue;
             }
-            last_valid = volume;
-            last_revision = revision;
-            if (volume == previous) break;
-            previous = volume;
+            last_valid = sample;
+            if (sample.percent == previous) break;
+            previous = sample.percent;
         }
-        if (!stop_.load())
-            launcher_media_controls::publish_mixer_volume(last_valid, last_revision);
+        publish_if_running(last_valid);
     }
 
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
     void follow_mixer()
     {
         while (!stop_.load()) {
-            cp0::pulse::watch_default_sink_changes(stop_, refresh_requested_, refresh_mixer_volume);
+            cp0::pulse::watch_default_sink_changes(stop_, refresh_requested_, [this] { refresh_mixer_volume(); });
             if (!wait_for_refresh(std::chrono::seconds(2))) return;
             // Explicit HOME requests also work when a subscription could not be established.
             refresh_if_requested();
@@ -229,18 +205,23 @@ bool persist_volume(int previous, int written)
 }
 
 #if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
-int adjust_local_volume(int delta_percent)
+int adjust_local_volume(int delta_percent, cp0::pulse::VolumeSample &observed)
 {
-    const int previous = read_mixer_volume();
+    const int previous = launcher_media_controls::read_mixer_volume().percent;
     if (previous < 0) return -1;
     const int target = volume_after_step(previous, delta_percent);
     int written = -1;
     cp0_signal_audio_api({"VolumeWrite", std::to_string(target)}, [&](int code, std::string data) {
+        const auto completed_at = std::chrono::steady_clock::now();
         int parsed = 0;
-        if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) written = parsed;
+        if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) {
+            written = parsed;
+            observed = {written, completed_at};
+        }
     });
     if (written < 0) return -1;
     if (!persist_volume(previous, written)) {
+        observed = {};
         cp0_signal_audio_api({"VolumeWrite", std::to_string(previous)}, nullptr);
         return -1;
     }
@@ -350,33 +331,54 @@ void refresh_volume_cache()
     volume_cache_worker.request_refresh();
 }
 
-std::uint64_t begin_volume_operation()
+cp0::pulse::VolumeSample read_mixer_volume(const std::atomic<bool> *stop_requested)
 {
-    std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    return ++volume_cache.next_revision;
+#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
+    return cp0::pulse::read_default_sink_volume_sample(stop_requested);
+#else
+    if (stop_requested && stop_requested->load()) return {};
+    cp0::pulse::VolumeSample sample;
+    try {
+        cp0_signal_audio_api({"VolumeRead"}, [&](int code, std::string data) {
+            const auto completed_at = std::chrono::steady_clock::now();
+            int parsed = 0;
+            if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed))
+                sample = {parsed, completed_at};
+        });
+    } catch (...) {
+        return {};
+    }
+    return sample;
+#endif
 }
 
-int publish_mixer_volume(int percent, std::uint64_t revision)
+int publish_mixer_volume(cp0::pulse::VolumeSample sample)
 {
     std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    if (percent >= 0 && revision > volume_cache.applied_revision)
-        publish_volume_locked(percent, revision);
+    if (sample.observed_at > volume_cache.observed_at) {
+        volume_cache.volume = sample.percent < 0 ? -1
+            : LauncherMediaControlsModel::clamp_percent(sample.percent);
+        volume_cache.observed_at = sample.observed_at;
+    }
     return volume_cache.volume;
 }
 
 int adjust_volume(int delta_percent)
 {
-    const auto revision = begin_volume_operation();
+    cp0::pulse::VolumeSample observed;
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
     const int written = cp0::pulse::adjust_default_sink_volume(
         [delta_percent](int current) { return volume_after_step(current, delta_percent); },
-        persist_volume);
+        persist_volume, &observed);
 #else
-    const int written = adjust_local_volume(delta_percent);
+    const int written = adjust_local_volume(delta_percent, observed);
 #endif
+    const int current = publish_mixer_volume(observed);
+    if (observed.observed_at != cp0::pulse::VolumeTime{} &&
+        (observed.percent < 0 || current != observed.percent))
+        refresh_volume_cache();
     if (written >= 0) {
         model.set_volume(written);
-        if (publish_mixer_volume(written, revision) != written) refresh_volume_cache();
         return written;
     }
 

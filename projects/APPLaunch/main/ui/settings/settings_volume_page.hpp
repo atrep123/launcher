@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -44,13 +45,14 @@ public:
     struct Response {
         int code = -3;
         std::string data;
+        std::chrono::steady_clock::time_point completed_at{};
     };
 
     struct VolumeResponse {
         int code = -3;
         int value = -1;
         std::string data;
-        uint64_t revision = 0;
+        std::chrono::steady_clock::time_point observed_at{};
     };
 
     bool ready() const;

@@ -10,6 +10,7 @@
 #include "../cp0_audio_runtime_lifecycle.hpp"
 #include "../cp0_signal_registration.hpp"
 
+#include <atomic>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -141,7 +142,7 @@ private:
     bool capturing_ = false;
     bool cap_paused_ = false;
     bool waveform_enabled_ = false;
-    int volume_ = kDefaultVolume;
+    std::atomic<int> volume_{kDefaultVolume};
     bool muted_ = false;
     std::vector<std::string> system_sound_names_ = {"Ding2.wav", "switch.wav", "enter.wav"};
     bool system_sound_enabled_ = true;
@@ -329,7 +330,7 @@ private:
     void VolumeRead(arg_t arg, callback_t callback)
     {
         (void)arg;
-        report(callback, 0, std::to_string(volume_));
+        report(callback, 0, std::to_string(volume_.load()));
     }
 
     void DefaultSink(arg_t arg, callback_t callback)
@@ -343,7 +344,7 @@ private:
     void VolumeWrite(int value, callback_t callback)
     {
         volume_ = value;
-        report(callback, 0, std::to_string(volume_));
+        report(callback, 0, std::to_string(value));
     }
 
     void MuteRead(arg_t arg, callback_t callback)

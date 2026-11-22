@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -30,8 +31,10 @@ constexpr int kPaContextNoAutospawn = 0x0001;
 constexpr int kPaOperationCancelled = 2;
 // pa_subscription_mask_t flags: PA_SUBSCRIPTION_MASK_SINK and _SERVER.
 constexpr int kPaSubscribeSinkAndServer = 0x0001 | 0x0080;
-constexpr int kWatchPollTimeoutUs = 1000000;
+constexpr int kWatchPollTimeoutUs = 100000;
+constexpr int kWorkerRequestSliceUs = 25000;
 constexpr auto kRequestTimeout = std::chrono::milliseconds(2000);
+constexpr auto kRollbackTimeout = std::chrono::milliseconds(500);
 
 struct pa_mainloop;
 struct pa_context;
@@ -197,14 +200,15 @@ struct SinkState {
     bool done = false;
     bool ok = false;
     std::uint32_t index = 0;
-    std::uint8_t channels = 0;
-    std::uint32_t volume = 0;
+    PaCVolume volume{};
+    VolumeTime observed_at{};
     int mute = 0;
 };
 
 struct SuccessState {
     bool done = false;
     bool ok = false;
+    VolumeTime observed_at{};
 };
 
 void server_info_cb(pa_context *, const PaServerInfo *info, void *userdata)
@@ -226,12 +230,11 @@ void sink_info_cb(pa_context *, const PaSinkInfo *info, int eol, void *userdata)
         return;
     }
     if (info) {
-        const auto channels = std::min<std::size_t>(info->volume.channels, kPaChannelsMax);
         state->index = info->index;
-        state->channels = static_cast<std::uint8_t>(channels);
-        state->volume = info->volume.values[0];
+        state->volume = info->volume;
+        state->observed_at = std::chrono::steady_clock::now();
         state->mute = info->mute;
-        state->ok = state->channels > 0;
+        state->ok = state->volume.channels > 0 && state->volume.channels <= kPaChannelsMax;
     }
     if (eol > 0) state->done = true;
 }
@@ -241,6 +244,7 @@ void success_cb(pa_context *, int success, void *userdata)
     auto *state = static_cast<SuccessState *>(userdata);
     state->done = true;
     state->ok = success != 0;
+    state->observed_at = std::chrono::steady_clock::now();
 }
 
 void sink_or_server_changed(pa_context *, int, std::uint32_t, void *userdata)
@@ -250,7 +254,7 @@ void sink_or_server_changed(pa_context *, int, std::uint32_t, void *userdata)
 
 class Session {
 public:
-    Session() = default;
+    explicit Session(const std::atomic<bool> *stop_requested = nullptr) : stop_requested_(stop_requested) {}
     ~Session() { close(); }
 
     Session(const Session &) = delete;
@@ -258,6 +262,7 @@ public:
 
     bool open()
     {
+        if (stopping()) return false;
         api_ = pulse_api();
         if (!api_) return false;
 
@@ -294,23 +299,24 @@ public:
         SinkState state;
         if (!run(api_->get_sink_info_by_name(context_, name.c_str(), &sink_info_cb, &state), state)) return false;
         sink_index_ = state.index;
-        sink_channels_ = state.channels;
         sink_volume_ = state.volume;
+        sink_observed_at_ = state.observed_at;
         sink_mute_ = state.mute;
         return true;
     }
 
     bool set_volume(int percent)
     {
-        if (sink_channels_ == 0) return false;
-
         PaCVolume volume{};
-        volume.channels = sink_channels_;
-        const pa_volume_t target = volume_scale_from_percent(percent);
-        for (std::uint8_t channel = 0; channel < sink_channels_; ++channel) volume.values[channel] = target;
+        volume.channels = sink_volume_.channels;
+        std::fill_n(volume.values, volume.channels, volume_scale_from_percent(percent));
+        return write_volume(volume);
+    }
 
-        SuccessState state;
-        return run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state);
+    bool restore_volume()
+    {
+        deadline_ = std::chrono::steady_clock::now() + kRollbackTimeout;
+        return write_volume(sink_volume_);
     }
 
     bool set_mute(bool muted)
@@ -321,7 +327,7 @@ public:
 
     bool subscribe_to_sink_changes(bool &changed)
     {
-        if (!api_->set_subscribe_callback || !api_->subscribe) return false;
+        if (stopping() || !api_->set_subscribe_callback || !api_->subscribe) return false;
 
         api_->set_subscribe_callback(context_, sink_or_server_changed, &changed);
         SuccessState state;
@@ -331,20 +337,35 @@ public:
 
     bool wait_for_sink_changes()
     {
-        return api_->context_get_state(context_) == kPaContextReady && dispatch(kWatchPollTimeoutUs);
+        return !stopping() && api_->context_get_state(context_) == kPaContextReady && dispatch(kWatchPollTimeoutUs);
     }
 
-    int volume_percent() const { return percent_from_volume_scale(sink_volume_); }
+    int volume_percent() const { return percent_from_volume_scale(sink_volume_.values[0]); }
+    VolumeTime sink_observed_at() const { return sink_observed_at_; }
+    VolumeTime write_observed_at() const { return write_observed_at_; }
     bool muted() const { return sink_mute_ != 0; }
 
 private:
+    bool stopping() const { return stop_requested_ && stop_requested_->load(); }
+
+    bool write_volume(const PaCVolume &volume)
+    {
+        SuccessState state;
+        if (!run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state))
+            return false;
+        write_observed_at_ = state.observed_at;
+        return true;
+    }
+
     bool pump()
     {
+        if (stopping()) return false;
         const auto now = std::chrono::steady_clock::now();
         if (now >= deadline_) return false;
         const auto remaining_us =
             std::chrono::duration_cast<std::chrono::microseconds>(deadline_ - now).count();
-        int slice_us = static_cast<int>(std::min<std::int64_t>(remaining_us, 100000));
+        const int max_slice = stop_requested_ ? kWorkerRequestSliceUs : 100000;
+        int slice_us = static_cast<int>(std::min<std::int64_t>(remaining_us, max_slice));
         if (slice_us < 1000) slice_us = 1000;
 
         return dispatch(slice_us);
@@ -353,7 +374,7 @@ private:
     bool dispatch(int timeout_us)
     {
         if (api_->mainloop_prepare(mainloop_, timeout_us) < 0) return false;
-        if (api_->mainloop_poll(mainloop_) < 0) return false;
+        if (api_->mainloop_poll(mainloop_) < 0 || stopping()) return false;
         if (api_->mainloop_dispatch(mainloop_) < 0) return false;
         return true;
     }
@@ -386,13 +407,15 @@ private:
         }
     }
 
+    const std::atomic<bool> *stop_requested_;
     const PulseApi *api_ = nullptr;
     pa_mainloop *mainloop_ = nullptr;
     pa_context *context_ = nullptr;
     std::chrono::steady_clock::time_point deadline_{};
     std::uint32_t sink_index_ = 0;
-    std::uint8_t sink_channels_ = 0;
-    std::uint32_t sink_volume_ = 0;
+    PaCVolume sink_volume_{};
+    VolumeTime sink_observed_at_{};
+    VolumeTime write_observed_at_{};
     int sink_mute_ = 0;
 };
 
@@ -423,8 +446,8 @@ void watch_default_sink_changes(const std::atomic<bool> &stop_requested,
     // The subscription callback only records an event. Reads run after
     // dispatch, so no synchronous request is nested in a libpulse callback.
     bool changed = true;
-    Session session;
-    if (stop_requested.load() || !session.open() || !session.subscribe_to_sink_changes(changed)) return;
+    Session session(&stop_requested);
+    if (!session.open() || !session.subscribe_to_sink_changes(changed)) return;
 
     while (!stop_requested.load()) {
         const bool requested = refresh_requested.exchange(false);
@@ -440,15 +463,17 @@ bool default_sink_name(std::string &name)
     return session.default_sink(name);
 }
 
+VolumeSample read_default_sink_volume_sample(const std::atomic<bool> *stop_requested)
+{
+    Session session(stop_requested);
+    std::string name;
+    if (!session.open() || !session.default_sink(name) || !session.sink(name)) return {};
+    return {session.volume_percent(), session.sink_observed_at()};
+}
+
 int read_default_sink_volume()
 {
-    Session session;
-    if (!session.open()) return -1;
-
-    std::string name;
-    if (!session.default_sink(name)) return -1;
-    if (!session.sink(name)) return -1;
-    return session.volume_percent();
+    return read_default_sink_volume_sample().percent;
 }
 
 int write_default_sink_volume(int percent)
@@ -465,8 +490,9 @@ int write_default_sink_volume(int percent)
 }
 
 int adjust_default_sink_volume(const std::function<int(int)> &target,
-                               const std::function<bool(int, int)> &persist)
+                               const std::function<bool(int, int)> &persist, VolumeSample *observed)
 {
+    if (observed) *observed = {};
     Session session;
     std::string name;
     if (!session.open() || !session.default_sink(name) || !session.sink(name)) return -1;
@@ -474,10 +500,24 @@ int adjust_default_sink_volume(const std::function<int(int)> &target,
     const int previous = session.volume_percent();
     const int percent = std::clamp(target(previous), 0, 100);
     if (!session.set_volume(percent)) return -1;
-    if (!persist(previous, percent)) {
-        (void)session.set_volume(previous);
-        return -1;
+
+    bool persisted = false;
+    try {
+        persisted = persist(previous, percent);
+    } catch (...) {
+        // Treat an exception from persistence as a failed save as well.
     }
+    if (!persisted) {
+        const bool restored = session.restore_volume();
+        std::fprintf(stderr, "APPLaunch: volume save failed; sink %s rollback %s\n", name.c_str(),
+                     restored ? "confirmed" : "not confirmed");
+        if (observed) {
+            *observed = restored ? VolumeSample{previous, session.write_observed_at()}
+                                 : VolumeSample{-1, std::chrono::steady_clock::now()};
+        }
+        return restored ? -1 : kVolumeRollbackFailed;
+    }
+    if (observed) *observed = {percent, session.write_observed_at()};
     if (session.muted()) (void)session.set_mute(false);
     return percent;
 }

@@ -8,7 +8,7 @@
 
 #include "model/setup_value_policy.hpp"
 
-#include <cstdint>
+#include "cp0_audio_volume_monitor.hpp"
 
 namespace launcher_media_controls {
 
@@ -25,10 +25,10 @@ void start_volume_cache();
 void stop_volume_cache();
 /* Queue a fresh read on the worker after an app exits. */
 void refresh_volume_cache();
-/* Reserve a revision before accessing the mixer. Publication returns the
- * current shared value, which can come from a newer operation. */
-std::uint64_t begin_volume_operation();
-int publish_mixer_volume(int percent, std::uint64_t revision);
+/* Read the mixer and timestamp the completed observation. */
+cp0::pulse::VolumeSample read_mixer_volume(const std::atomic<bool> *stop_requested = nullptr);
+/* Publish a mixer observation and return the value the shared cache holds. */
+int publish_mixer_volume(cp0::pulse::VolumeSample sample);
 
 int adjust_volume(int delta_percent);
 int adjust_brightness(int delta_percent);

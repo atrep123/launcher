@@ -57,6 +57,11 @@ std::size_t count_commands(const std::string &command)
         std::count(audio_commands.begin(), audio_commands.end(), command));
 }
 
+int publish_current_volume(int percent)
+{
+    return launcher_media_controls::publish_mixer_volume({percent, std::chrono::steady_clock::now()});
+}
+
 bool wait_for_cached_volume(int expected, int timeout_ms = 3000)
 {
     const auto deadline =
@@ -184,7 +189,7 @@ int main()
 
     // Issue #264: HOME remembers 100%, but an external app leaves the
     // sink at 20%. The shortcut must read it before writing the next step.
-    launcher_media_controls::publish_mixer_volume(100, launcher_media_controls::begin_volume_operation());
+    publish_current_volume(100);
     sink_volume = 20;
     const int adjusted_volume = launcher_media_controls::adjust_volume(-10);
     if (adjusted_volume != 10)
@@ -202,16 +207,16 @@ int main()
 
     // Mixer and Settings can report a level between shortcut increments.
     sink_volume = 82;
-    launcher_media_controls::publish_mixer_volume(82, launcher_media_controls::begin_volume_operation());
+    publish_current_volume(82);
     assert(launcher_media_controls::cached_volume() == 82);
     assert(launcher_media_controls::adjust_volume(-10) == 70);
     assert(sink_volume == 70);
     assert(configured_volume == 70);
     assert(launcher_media_controls::cached_volume() == 70);
 
-    launcher_media_controls::publish_mixer_volume(150, launcher_media_controls::begin_volume_operation());
+    publish_current_volume(150);
     assert(launcher_media_controls::cached_volume() == 100);
-    launcher_media_controls::publish_mixer_volume(-10, launcher_media_controls::begin_volume_operation());
+    launcher_media_controls::publish_mixer_volume({});
     assert(launcher_media_controls::cached_volume() == 100);
 
     // A launcher restart re-reads the mixer and replaces the cache.
@@ -221,11 +226,14 @@ int main()
     launcher_media_controls::stop_volume_cache();
     assert(launcher_media_controls::cached_volume() == 63);
 
-    // A Settings read started before the worker saw an external change.
-    const auto settings_read = launcher_media_controls::begin_volume_operation();
-    const auto worker_read = launcher_media_controls::begin_volume_operation();
-    assert(launcher_media_controls::publish_mixer_volume(20, worker_read) == 20);
-    assert(launcher_media_controls::publish_mixer_volume(100, settings_read) == 20);
+    // A Settings observation can reach the UI after the worker publishes
+    // a newer level. Settings must receive the level actually held in cache.
+    sink_volume = 100;
+    const auto earlier_read = launcher_media_controls::read_mixer_volume();
+    sink_volume = 20;
+    const auto later_read = launcher_media_controls::read_mixer_volume();
+    assert(launcher_media_controls::publish_mixer_volume(later_read) == 20);
+    assert(launcher_media_controls::publish_mixer_volume(earlier_read) == 20);
     assert(launcher_media_controls::cached_volume() == 20);
 
     // Failure leaves the persisted and mixer levels alone, even if the very
