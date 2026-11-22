@@ -75,13 +75,13 @@ lv_color32_t sample_bilinear(const lv_draw_buf_t &source, uint32_t output_x,
 // installed resources. The silhouette and palette are shared by all sizes.
 void draw_folder_icon(lv_draw_buf_t &buffer, std::uint32_t color)
 {
-    const auto background = lv_color32_make(27, 31, 38, 255);
-    const auto back = lv_color32_make((color >> 16) * 3 / 4,
-                                     ((color >> 8) & 255) * 3 / 4,
-                                     (color & 255) * 3 / 4, 255);
-    const auto front = lv_color32_make(color >> 16, (color >> 8) & 255, color & 255, 255);
+    const auto background = lv_color_to_u16(lv_color_hex(0x1b1f26));
+    const auto back = lv_color_to_u16(lv_color_make((color >> 16) * 3 / 4,
+                                                   ((color >> 8) & 255) * 3 / 4,
+                                                   (color & 255) * 3 / 4));
+    const auto front = lv_color_to_u16(lv_color_hex(color));
     for (uint32_t y = 0; y < buffer.header.h; ++y) {
-        auto *row = static_cast<lv_color32_t *>(lv_draw_buf_goto_xy(&buffer, 0, y));
+        auto *row = static_cast<std::uint16_t *>(lv_draw_buf_goto_xy(&buffer, 0, y));
         std::fill_n(row, buffer.header.w, background);
         if (y >= 26 && y < 73) {
             const uint32_t right = y < 34 ? 44 : 80;
@@ -128,7 +128,9 @@ void HomeIconBufferPool::rebuild(const std::vector<std::string> &icon_paths,
         auto &icon = folder_icons_[i];
         icon.reset();
         if (folder_sizes[i] == 0) continue;
-        icon.reset(lv_draw_buf_create(kIconSize, kIconSize, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO));
+        // The folder background is opaque. Match the panel's format so
+        // animation can transform the icon without converting ARGB pixels.
+        icon.reset(lv_draw_buf_create(kIconSize, kIconSize, LV_COLOR_FORMAT_RGB565, LV_STRIDE_AUTO));
         if (!icon) continue;
         draw_folder_icon(*icon, app_folder_definition(static_cast<AppFolder>(i)).color);
         if (!canvas) {

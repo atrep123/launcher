@@ -242,6 +242,9 @@ void UILaunchPage::set_panel_icon(lv_obj_t *panel, const std::string &src,
     const lv_coord_t source_card_size = lv_obj_get_width(panel) >= 100 ? 100 : 80;
     const uint32_t image_size = static_cast<uint32_t>(std::max<lv_coord_t>(
         1, source_card_size - 2 * card_border));
+    // The shape has solid edges and its numbers are drawn with an
+    // antialiased font at build time. Keep app image sampling unchanged.
+    lv_image_set_antialias(image, !folder_icon && LV_COLOR_DEPTH > 8);
     lv_image_set_src(image, folder_icon ? folder_icon : home_icon_pool_.find(src, image_size));
     compensate_image_scale(image);
 }
