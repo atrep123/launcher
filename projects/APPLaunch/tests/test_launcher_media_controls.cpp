@@ -30,6 +30,8 @@ namespace {
 
 int sink_volume = 63;
 int configured_volume = 80;
+bool volume_read_failed = false;
+bool config_save_failed = false;
 int backlight_maximum = 255;
 int backlight_value = 102;
 int configured_brightness = 102;
@@ -82,7 +84,7 @@ int main()
                 ++mute_toggles;
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "VolumeRead") {
-                reply(callback, 0, std::to_string(sink_volume));
+                reply(callback, volume_read_failed ? -1 : 0, std::to_string(sink_volume));
             } else if (command == "VolumeWrite") {
                 assert(arguments.size() == 2);
                 sink_volume = std::stoi(*std::next(arguments.begin()));
@@ -116,7 +118,7 @@ int main()
                     configured_volume = value;
                 reply(callback, 0, "");
             } else if (command == "Save") {
-                reply(callback, 0, "");
+                reply(callback, config_save_failed ? -1 : 0, "");
             } else {
                 assert(false);
             }
@@ -156,38 +158,46 @@ int main()
     const std::size_t startup_reads = count_commands("VolumeRead");
     assert(startup_reads >= 2);
 
-    // A shortcut steps from the cached value; it must not issue a fresh read.
+    // Keep upstream rounding and unmute behavior for a live level off the step grid.
     assert(launcher_media_controls::adjust_volume(-10) == 50);
     assert(!sink_muted);
     assert(sink_volume == 50);
     assert(configured_volume == 50);
     assert(launcher_media_controls::cached_volume() == 50);
     assert(mute_toggles == 1);
-    assert(count_commands("VolumeRead") == startup_reads);
-    assert(audio_commands[0] == "VolumeRead");
-    assert(audio_commands[1] == "VolumeRead");
-    assert(audio_commands[2] == "MuteRead");
-    assert(audio_commands[3] == "MuteToggle");
-    assert(audio_commands[4] == "VolumeWrite");
+    assert(count_commands("VolumeRead") == startup_reads + 1);
 
-    // An external mixer change does not reach the shortcut until something
-    // publishes it (the Settings read or a write does).
-    sink_volume = 90;
+    // #264: an external app changed the mixer while HOME still had 100%.
+    launcher_media_controls::update_cached_volume(100);
+    configured_volume = 100;
+    sink_volume = 20;
+    assert(launcher_media_controls::adjust_volume(-10) == 10);
+    assert(sink_volume == 10);
+    assert(configured_volume == 10);
+    assert(launcher_media_controls::cached_volume() == 10);
+
+    // A read failure must not write volume, unmute, or persist a cached step.
+    volume_read_failed = true;
     sink_muted = true;
-    assert(launcher_media_controls::adjust_volume(10) == 60);
-    assert(!sink_muted);
-    assert(sink_volume == 60);
-    assert(configured_volume == 60);
-    assert(launcher_media_controls::cached_volume() == 60);
-    assert(mute_toggles == 2);
-    assert(count_commands("VolumeRead") == startup_reads);
+    const auto commands_before_failure = audio_commands.size();
+    const int config_writes_before_failure = config_writes;
+    assert(launcher_media_controls::adjust_volume(10) == 10);
+    assert(audio_commands.size() == commands_before_failure + 1);
+    assert(audio_commands.back() == "VolumeRead");
+    assert(sink_muted);
+    assert(sink_volume == 10);
+    assert(config_writes == config_writes_before_failure);
+    assert(launcher_media_controls::cached_volume() == 10);
+    volume_read_failed = false;
 
-    launcher_media_controls::update_cached_volume(82);
-    assert(launcher_media_controls::cached_volume() == 82);
-    assert(launcher_media_controls::adjust_volume(-10) == 70);
+    // A failed save restores the previous mixer and configuration values.
+    sink_volume = 70;
+    config_save_failed = true;
+    assert(launcher_media_controls::adjust_volume(10) == 70);
     assert(sink_volume == 70);
-    assert(configured_volume == 70);
-    assert(launcher_media_controls::cached_volume() == 70);
+    assert(configured_volume == 10);
+    assert(launcher_media_controls::cached_volume() == 10);
+    config_save_failed = false;
 
     launcher_media_controls::update_cached_volume(150);
     assert(launcher_media_controls::cached_volume() == 100);

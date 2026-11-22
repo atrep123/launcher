@@ -6,6 +6,10 @@
 
 #include "launcher_media_controls.h"
 
+#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
+#include "cp0_audio_volume_step.hpp"
+#endif
+
 #include "hal_lvgl_bsp.h"
 #include "model/brightness_operation.hpp"
 #include "model/launcher_media_model.hpp"
@@ -166,21 +170,15 @@ bool write_config_int(const char *key, int value, int fallback)
     return false;
 }
 
-int read_volume()
+bool persist_volume(int previous, int written)
 {
-    const int cached = g_cached_volume.load();
-    if (cached >= 0) return LauncherMediaControlsModel::clamp_percent(cached);
-
-    int volume = read_mixer_volume();
-    if (volume < 0)
-        volume = read_config_int("volume", model.volume_or(50));
-    volume = LauncherMediaControlsModel::clamp_percent(volume);
-    /* The first authoritative value becomes the cache, so a shortcut pressed
-     * before the startup read completed cannot disagree with Settings. */
-    g_cached_volume.store(volume);
-    return volume;
+    if (!write_config_int("volume", written, previous)) return false;
+    model.set_volume(written);
+    g_cached_volume.store(written);
+    return true;
 }
 
+#if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
 bool read_mute()
 {
     bool muted = model.muted();
@@ -204,14 +202,13 @@ int write_volume(int previous, int percent)
         if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) written = parsed;
     });
     if (written < 0) return previous;
-    if (!write_config_int("volume", written, previous)) {
+    if (!persist_volume(previous, written)) {
         cp0_signal_audio_api({"VolumeWrite", std::to_string(previous)}, nullptr);
         return previous;
     }
-    model.set_volume(written);
-    g_cached_volume.store(written);
     return written;
 }
+#endif
 
 int backlight_max()
 {
@@ -311,13 +308,25 @@ void update_cached_volume(int percent)
 
 int adjust_volume(int delta_percent)
 {
-    if (read_mute())
-        (void)toggle_mute();
-    const int current = read_volume();
-    const int base = setup_values::round_volume_percent(current);
     const int delta = delta_percent > 0 ? VOLUME_STEP_PERCENT
                                        : delta_percent < 0 ? -VOLUME_STEP_PERCENT : 0;
-    return write_volume(current, base + delta);
+    const auto target = [delta](int current) { return setup_values::round_volume_percent(current) + delta; };
+#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
+    const int result = cp0::pulse::step_default_sink_volume(target, persist_volume);
+#else
+    const int current = read_mixer_volume();
+    int result = -1;
+    if (current >= 0) {
+        if (read_mute()) (void)toggle_mute();
+        result = write_volume(current, target(current));
+    }
+#endif
+    if (result >= 0) return result;
+
+    // A cached value can still be displayed when the mixer cannot be read.
+    const int cached = cached_volume();
+    return cached >= 0 ? cached : LauncherMediaControlsModel::clamp_percent(
+        read_config_int("volume", model.volume_or(50)));
 }
 
 int adjust_brightness(int delta_percent)
