@@ -10,12 +10,15 @@
 
 namespace cp0::pulse {
 
-// Synchronous device HAL operation for volume shortcuts. Computes the target
-// from the live level and writes it to the same sink on the same connection.
-// Calls persist(previous, written) after a successful write and restores the
-// previous percentage if persistence fails. Returns the written percentage,
-// the previous percentage on write or save failure, or -1 on read failure.
-int step_default_sink_volume(const std::function<int(int)> &target,
-                             const std::function<bool(int, int)> &persist);
+struct VolumeStepResult {
+    int percent = -1;
+    bool muted = false;
+};
+
+// Writes the step to the sink it read. Calls persist(previous, written) after
+// an acknowledged write and reconnects to recover on failure. Returns the
+// last confirmed state of that sink, or percent -1 if the initial read failed.
+VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
+                                          const std::function<bool(int, int)> &persist);
 
 } // namespace cp0::pulse

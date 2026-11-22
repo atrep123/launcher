@@ -88,6 +88,17 @@ public:
             worker_.join();
     }
 
+    // An authoritative update supersedes an in-flight startup read.
+    void update(int volume)
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_ = true;
+            g_cached_volume.store(volume);
+        }
+        wake_.notify_all();
+    }
+
 private:
     bool stop_requested()
     {
@@ -104,7 +115,8 @@ private:
 
     void publish(int volume)
     {
-        g_cached_volume.store(LauncherMediaControlsModel::clamp_percent(volume));
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!stop_) g_cached_volume.store(LauncherMediaControlsModel::clamp_percent(volume));
     }
 
     void run()
@@ -172,10 +184,7 @@ bool write_config_int(const char *key, int value, int fallback)
 
 bool persist_volume(int previous, int written)
 {
-    if (!write_config_int("volume", written, previous)) return false;
-    model.set_volume(written);
-    g_cached_volume.store(written);
-    return true;
+    return write_config_int("volume", written, previous);
 }
 
 #if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
@@ -206,6 +215,8 @@ int write_volume(int previous, int percent)
         cp0_signal_audio_api({"VolumeWrite", std::to_string(previous)}, nullptr);
         return previous;
     }
+    model.set_volume(written);
+    launcher_media_controls::update_cached_volume(written);
     return written;
 }
 #endif
@@ -303,7 +314,7 @@ void stop_volume_cache()
 
 void update_cached_volume(int percent)
 {
-    g_cached_volume.store(LauncherMediaControlsModel::clamp_percent(percent));
+    g_startup_volume_cache.update(LauncherMediaControlsModel::clamp_percent(percent));
 }
 
 int adjust_volume(int delta_percent)
@@ -312,7 +323,13 @@ int adjust_volume(int delta_percent)
                                        : delta_percent < 0 ? -VOLUME_STEP_PERCENT : 0;
     const auto target = [delta](int current) { return setup_values::round_volume_percent(current) + delta; };
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
-    const int result = cp0::pulse::step_default_sink_volume(target, persist_volume);
+    const auto result = cp0::pulse::step_default_sink_volume(target, persist_volume);
+    if (result.percent >= 0) {
+        model.set_mute(result.muted);
+        model.set_volume(result.percent);
+        update_cached_volume(result.percent);
+        return result.percent;
+    }
 #else
     const int current = read_mixer_volume();
     int result = -1;
@@ -320,8 +337,8 @@ int adjust_volume(int delta_percent)
         if (read_mute()) (void)toggle_mute();
         result = write_volume(current, target(current));
     }
-#endif
     if (result >= 0) return result;
+#endif
 
     // A cached value can still be displayed when the mixer cannot be read.
     const int cached = cached_volume();

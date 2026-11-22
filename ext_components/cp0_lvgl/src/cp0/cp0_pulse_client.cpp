@@ -30,7 +30,6 @@ constexpr int kPaContextReady = 4;
 constexpr int kPaContextNoAutospawn = 0x0001;
 constexpr int kPaOperationCancelled = 2;
 constexpr auto kRequestTimeout = std::chrono::milliseconds(2000);
-constexpr auto kVolumeStepTimeout = std::chrono::milliseconds(250);
 
 struct pa_mainloop;
 struct pa_context;
@@ -112,6 +111,7 @@ struct PulseApi {
                                               void *) = nullptr;
     pa_operation *(*set_sink_mute_by_index)(pa_context *, std::uint32_t, int, SuccessCallback, void *) = nullptr;
     int (*operation_get_state)(pa_operation *) = nullptr;
+    void (*operation_cancel)(pa_operation *) = nullptr;
     void (*operation_unref)(pa_operation *) = nullptr;
 
     bool complete() const
@@ -119,7 +119,8 @@ struct PulseApi {
         return handle && mainloop_new && mainloop_get_api && mainloop_prepare && mainloop_poll &&
                mainloop_dispatch && mainloop_free && context_new && context_connect && context_get_state &&
                context_disconnect && context_unref && get_server_info && get_sink_info_by_name &&
-               set_sink_volume_by_name && set_sink_mute_by_name && operation_get_state && operation_unref;
+               set_sink_volume_by_name && set_sink_mute_by_name && operation_get_state &&
+               operation_cancel && operation_unref;
     }
 };
 
@@ -171,6 +172,8 @@ const PulseApi *pulse_api()
             loaded.handle, "pa_context_set_sink_mute_by_index");
         loaded.operation_get_state =
             resolve_symbol<decltype(loaded.operation_get_state)>(loaded.handle, "pa_operation_get_state");
+        loaded.operation_cancel =
+            resolve_symbol<decltype(loaded.operation_cancel)>(loaded.handle, "pa_operation_cancel");
         loaded.operation_unref =
             resolve_symbol<decltype(loaded.operation_unref)>(loaded.handle, "pa_operation_unref");
 
@@ -247,7 +250,7 @@ public:
     Session(const Session &) = delete;
     Session &operator=(const Session &) = delete;
 
-    bool open(std::chrono::milliseconds timeout = kRequestTimeout)
+    bool open()
     {
         api_ = pulse_api();
         if (!api_) return false;
@@ -261,7 +264,7 @@ public:
         context_ = api_->context_new(mainloop_api, "APPLaunch");
         if (!context_) return false;
 
-        set_deadline(timeout);
+        renew_deadline();
         if (api_->context_connect(context_, nullptr, kPaContextNoAutospawn, nullptr) < 0) return false;
 
         for (;;) {
@@ -308,28 +311,30 @@ public:
 
     bool set_step_volume(int percent)
     {
-        if (!api_->set_sink_volume_by_index || std::chrono::steady_clock::now() >= deadline_) return false;
+        if (!api_->set_sink_volume_by_index) return false;
+        renew_deadline();
 
         const PaCVolume volume = channel_volume(percent);
         SuccessState state;
         return run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state);
     }
 
-    void unmute_for_step()
+    bool set_step_mute(bool muted)
     {
-        if (!muted() || !api_->set_sink_mute_by_index || std::chrono::steady_clock::now() >= deadline_) return;
+        if (!api_->set_sink_mute_by_index) return false;
+        renew_deadline();
 
         SuccessState state;
-        pa_operation *operation = api_->set_sink_mute_by_index(context_, sink_index_, 0, &success_cb, &state);
-        // Without a reply, close the connection instead of pumping it again.
-        if (operation && !run(operation, state) && !state.done) deadline_ = {};
+        return run(api_->set_sink_mute_by_index(context_, sink_index_, muted ? 1 : 0, &success_cb, &state), state);
     }
 
-    void set_deadline(std::chrono::milliseconds timeout)
+    void renew_deadline()
     {
-        deadline_ = std::chrono::steady_clock::now() + timeout;
+        deadline_ = std::chrono::steady_clock::now() + kRequestTimeout;
     }
 
+    std::uint32_t sink_index() const { return sink_index_; }
+    VolumeStepResult step_state() const { return {std::clamp(volume_percent(), 0, 100), muted()}; }
     int volume_percent() const { return percent_from_volume_scale(sink_volume_); }
     bool muted() const { return sink_mute_ != 0; }
 
@@ -365,6 +370,8 @@ private:
             if (api_->operation_get_state(operation) == kPaOperationCancelled) break;
             if (!pump()) break;
         }
+        // A later dispatch must not call back into a request that timed out.
+        if (!state.done) api_->operation_cancel(operation);
         api_->operation_unref(operation);
         return state.done && state.ok;
     }
@@ -444,26 +451,44 @@ int write_default_sink_volume(int percent)
     return session.set_volume(name, clamped) ? clamped : -1;
 }
 
-int step_default_sink_volume(const std::function<int(int)> &target,
-                             const std::function<bool(int, int)> &persist)
+VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
+                                          const std::function<bool(int, int)> &persist)
 {
-    Session session;
     std::string name;
-    if (!session.open(kVolumeStepTimeout) || !session.default_sink(name) || !session.sink(name))
-        return -1;
+    std::uint32_t index;
+    VolumeStepResult previous;
+    VolumeStepResult observed;
+    bool step_written = false;
+    {
+        Session session;
+        if (!session.open() || !session.default_sink(name) || !session.sink(name)) return {};
 
-    const int previous = std::clamp(session.volume_percent(), 0, 100);
-    const int written = std::clamp(target(previous), 0, 100);
-    session.unmute_for_step();
-    if (!session.set_step_volume(written)) return previous;
-
-    if (!persist(previous, written)) {
-        // Configuration I/O may have used up the original Pulse deadline.
-        session.set_deadline(kVolumeStepTimeout);
-        (void)session.set_step_volume(previous);
-        return previous;
+        index = session.sink_index();
+        previous = observed = session.step_state();
+        const int written = std::clamp(target(previous.percent), 0, 100);
+        if (!previous.muted || session.set_step_mute(false)) {
+            observed.muted = false;
+            step_written = session.set_step_volume(written);
+            if (step_written) {
+                observed.percent = written;
+                if (persist(previous.percent, written)) return observed;
+            }
+        }
     }
-    return written;
+
+    // The write session may have disconnected, and the default may have changed.
+    Session recovery;
+    if (!recovery.open() || !recovery.sink(name) || recovery.sink_index() != index) return observed;
+
+    observed = recovery.step_state();
+    if (previous.muted && !observed.muted && recovery.set_step_mute(true)) observed.muted = true;
+    // Restore mute before bringing back the previous level on a muted sink.
+    if (step_written && (!previous.muted || observed.muted) && recovery.set_step_volume(previous.percent))
+        observed.percent = previous.percent;
+
+    recovery.renew_deadline();
+    if (recovery.sink(name) && recovery.sink_index() == index) return recovery.step_state();
+    return observed;
 }
 
 int read_default_sink_mute()
