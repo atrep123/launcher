@@ -5,6 +5,7 @@
  */
 
 #include "cp0_pulse_client.hpp"
+#include "cp0_audio_volume_monitor.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -27,6 +28,9 @@ constexpr std::size_t kPaChannelsMax = 32;
 constexpr int kPaContextReady = 4;
 constexpr int kPaContextNoAutospawn = 0x0001;
 constexpr int kPaOperationCancelled = 2;
+// pa_subscription_mask_t flags: PA_SUBSCRIPTION_MASK_SINK and _SERVER.
+constexpr int kPaSubscribeSinkAndServer = 0x0001 | 0x0080;
+constexpr int kWatchPollTimeoutUs = 1000000;
 constexpr auto kRequestTimeout = std::chrono::milliseconds(2000);
 
 struct pa_mainloop;
@@ -86,6 +90,7 @@ static_assert(offsetof(PaServerInfo, default_sink_name) == 48, "unexpected pa_se
 using SinkInfoCallback = void (*)(pa_context *, const PaSinkInfo *, int, void *);
 using ServerInfoCallback = void (*)(pa_context *, const PaServerInfo *, void *);
 using SuccessCallback = void (*)(pa_context *, int, void *);
+using SubscribeCallback = void (*)(pa_context *, int, std::uint32_t, void *);
 
 struct PulseApi {
     void *handle = nullptr;
@@ -105,7 +110,10 @@ struct PulseApi {
     pa_operation *(*set_sink_volume_by_name)(pa_context *, const char *, const PaCVolume *, SuccessCallback,
                                              void *) = nullptr;
     pa_operation *(*set_sink_mute_by_name)(pa_context *, const char *, int, SuccessCallback, void *) = nullptr;
+    void (*set_subscribe_callback)(pa_context *, SubscribeCallback, void *) = nullptr;
+    pa_operation *(*subscribe)(pa_context *, int, SuccessCallback, void *) = nullptr;
     int (*operation_get_state)(pa_operation *) = nullptr;
+    void (*operation_cancel)(pa_operation *) = nullptr;
     void (*operation_unref)(pa_operation *) = nullptr;
 
     bool complete() const
@@ -113,7 +121,8 @@ struct PulseApi {
         return handle && mainloop_new && mainloop_get_api && mainloop_prepare && mainloop_poll &&
                mainloop_dispatch && mainloop_free && context_new && context_connect && context_get_state &&
                context_disconnect && context_unref && get_server_info && get_sink_info_by_name &&
-               set_sink_volume_by_name && set_sink_mute_by_name && operation_get_state && operation_unref;
+               set_sink_volume_by_name && set_sink_mute_by_name && operation_get_state &&
+               operation_cancel && operation_unref;
     }
 };
 
@@ -159,6 +168,11 @@ const PulseApi *pulse_api()
             loaded.handle, "pa_context_set_sink_volume_by_name");
         loaded.set_sink_mute_by_name = resolve_symbol<decltype(loaded.set_sink_mute_by_name)>(
             loaded.handle, "pa_context_set_sink_mute_by_name");
+        loaded.set_subscribe_callback = resolve_symbol<decltype(loaded.set_subscribe_callback)>(
+            loaded.handle, "pa_context_set_subscribe_callback");
+        loaded.subscribe = resolve_symbol<decltype(loaded.subscribe)>(loaded.handle, "pa_context_subscribe");
+        loaded.operation_cancel =
+            resolve_symbol<decltype(loaded.operation_cancel)>(loaded.handle, "pa_operation_cancel");
         loaded.operation_get_state =
             resolve_symbol<decltype(loaded.operation_get_state)>(loaded.handle, "pa_operation_get_state");
         loaded.operation_unref =
@@ -225,6 +239,11 @@ void success_cb(pa_context *, int success, void *userdata)
     auto *state = static_cast<SuccessState *>(userdata);
     state->done = true;
     state->ok = success != 0;
+}
+
+void sink_or_server_changed(pa_context *, int, std::uint32_t, void *userdata)
+{
+    *static_cast<bool *>(userdata) = true;
 }
 
 class Session {
@@ -297,6 +316,21 @@ public:
         return run(api_->set_sink_mute_by_name(context_, name.c_str(), muted ? 1 : 0, &success_cb, &state), state);
     }
 
+    bool subscribe_to_sink_changes(bool &changed)
+    {
+        if (!api_->set_subscribe_callback || !api_->subscribe) return false;
+
+        api_->set_subscribe_callback(context_, sink_or_server_changed, &changed);
+        SuccessState state;
+        deadline_ = std::chrono::steady_clock::now() + kRequestTimeout;
+        return run(api_->subscribe(context_, kPaSubscribeSinkAndServer, success_cb, &state), state);
+    }
+
+    bool wait_for_sink_changes()
+    {
+        return api_->context_get_state(context_) == kPaContextReady && dispatch(kWatchPollTimeoutUs);
+    }
+
     int volume_percent() const { return percent_from_volume_scale(sink_volume_); }
     bool muted() const { return sink_mute_ != 0; }
 
@@ -310,7 +344,12 @@ private:
         int slice_us = static_cast<int>(std::min<std::int64_t>(remaining_us, 100000));
         if (slice_us < 1000) slice_us = 1000;
 
-        if (api_->mainloop_prepare(mainloop_, slice_us) < 0) return false;
+        return dispatch(slice_us);
+    }
+
+    bool dispatch(int timeout_us)
+    {
+        if (api_->mainloop_prepare(mainloop_, timeout_us) < 0) return false;
         if (api_->mainloop_poll(mainloop_) < 0) return false;
         if (api_->mainloop_dispatch(mainloop_) < 0) return false;
         return true;
@@ -324,6 +363,8 @@ private:
             if (api_->operation_get_state(operation) == kPaOperationCancelled) break;
             if (!pump()) break;
         }
+        // A timed-out operation must stop calling its stack-owned callback data.
+        if (!state.done) api_->operation_cancel(operation);
         api_->operation_unref(operation);
         return state.done && state.ok;
     }
@@ -369,6 +410,21 @@ std::uint32_t volume_scale_from_percent(int percent)
 bool preload()
 {
     return pulse_api() != nullptr;
+}
+
+void watch_default_sink_changes(const std::atomic<bool> &stop_requested,
+                                const std::function<void()> &refresh)
+{
+    // The subscription callback only records an event. Reads run after
+    // dispatch, so no synchronous request is nested in a libpulse callback.
+    bool changed = true;
+    Session session;
+    if (stop_requested.load() || !session.open() || !session.subscribe_to_sink_changes(changed)) return;
+
+    while (!stop_requested.load()) {
+        if (std::exchange(changed, false)) refresh();
+        if (!stop_requested.load() && !session.wait_for_sink_changes()) return;
+    }
 }
 
 bool default_sink_name(std::string &name)

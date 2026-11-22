@@ -312,10 +312,9 @@ void LvSettingVolumePage3::initialize_page(lv_obj_t *parent, std::function<void(
 {
     back_callback_ = std::move(back_callback);
     LeaveSelfPage = [this] { request_back(); };
-    // The first frame must show the volume the launcher cached at startup, so
-    // Settings -> Speaker and the shortcut OSD agree. The persisted key is
-    // only used when the startup read has not produced a value yet; the
-    // asynchronous mixer read below refreshes both when it returns.
+    // Seed the first frame from the same volume as the shortcut OSD.
+    // Use the persisted key until the cache has a value. The asynchronous
+    // mixer read below refreshes the page and the cache when it returns.
     const int saved = launcher_media_controls::has_cached_volume()
                           ? launcher_media_controls::cached_volume()
                           : settings_audio_com::read_saved_volume(metric(LayoutMetric::MaxVolume));

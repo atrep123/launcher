@@ -12,6 +12,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <iterator>
 #include <list>
@@ -156,32 +157,27 @@ int main()
     const std::size_t startup_reads = count_commands("VolumeRead");
     assert(startup_reads >= 2);
 
-    // A shortcut steps from the cached value; it must not issue a fresh read.
-    assert(launcher_media_controls::adjust_volume(-10) == 50);
+    // Issue #264: HOME remembers 100%, but an external app leaves the
+    // default sink at 20%. With no subscription, the shortcut must re-read
+    // the mixer and write 10%; the Settings seed and OSD share that result.
+    launcher_media_controls::update_cached_volume(100);
+    sink_volume = 20;
+    const int adjusted_volume = launcher_media_controls::adjust_volume(-10);
+    if (adjusted_volume != 10)
+        std::fprintf(stderr, "issue #264: expected 10%% after external change to 20%%, got %d%%\n",
+                     adjusted_volume);
+    assert(adjusted_volume == 10);
     assert(!sink_muted);
-    assert(sink_volume == 50);
-    assert(configured_volume == 50);
-    assert(launcher_media_controls::cached_volume() == 50);
+    assert(sink_volume == 10);
+    assert(configured_volume == 10);
+    assert(launcher_media_controls::cached_volume() == 10);
     assert(mute_toggles == 1);
-    assert(count_commands("VolumeRead") == startup_reads);
-    assert(audio_commands[0] == "VolumeRead");
-    assert(audio_commands[1] == "VolumeRead");
-    assert(audio_commands[2] == "MuteRead");
-    assert(audio_commands[3] == "MuteToggle");
-    assert(audio_commands[4] == "VolumeWrite");
+    assert(count_commands("VolumeRead") == startup_reads + 1);
+    assert(audio_commands[audio_commands.size() - 2] == "VolumeRead");
+    assert(audio_commands.back() == "VolumeWrite");
 
-    // An external mixer change does not reach the shortcut until something
-    // publishes it (the Settings read or a write does).
-    sink_volume = 90;
-    sink_muted = true;
-    assert(launcher_media_controls::adjust_volume(10) == 60);
-    assert(!sink_muted);
-    assert(sink_volume == 60);
-    assert(configured_volume == 60);
-    assert(launcher_media_controls::cached_volume() == 60);
-    assert(mute_toggles == 2);
-    assert(count_commands("VolumeRead") == startup_reads);
-
+    // Mixer and Settings can report a level between shortcut increments.
+    sink_volume = 82;
     launcher_media_controls::update_cached_volume(82);
     assert(launcher_media_controls::cached_volume() == 82);
     assert(launcher_media_controls::adjust_volume(-10) == 70);

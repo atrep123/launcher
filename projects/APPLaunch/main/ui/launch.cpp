@@ -10,6 +10,7 @@
 #include "builtin_app_registry.hpp"
 #include "desktop_app_loader.hpp"
 #include "esc_hold_hint_controller.h"
+#include "launcher_media_controls.h"
 #include "ui.h"
 #include "generated/page_app.h"
 #include "ui_launch_page.h"
@@ -79,6 +80,7 @@ void Launch::lv_go_back_home(void *arg) noexcept
         lv_refr_now(nullptr);
         self->app_Page.reset();
         self->esc_ui_watchdog_.disarm();
+        launcher_media_controls::refresh_volume_cache();
         SLOGI("[HOME] lv_go_back_home done, on launcher home");
     } catch (...) {
         self->app_Page.reset();
@@ -179,6 +181,7 @@ void Launch::launch_Exec(const std::string &exec, bool keep_root)
     lv_refr_now(disp);
     LVGL_RUN_FLAGE = 1;
     ui_screensaver_set_foreground(1);
+    launcher_media_controls::refresh_volume_cache();
 }
 
 void Launch::select_next_app()
