@@ -8,7 +8,7 @@
 
 #include "model/setup_value_policy.hpp"
 
-#include "cp0_audio_volume_monitor.hpp"
+#include <atomic>
 
 namespace launcher_media_controls {
 
@@ -23,12 +23,10 @@ int cached_volume();
 void start_volume_cache();
 /* Join the mixer reader so teardown cannot race a signal call. */
 void stop_volume_cache();
-/* Queue a fresh read on the worker after an app exits. */
+/* Queue a fresh read on the subscription worker. */
 void refresh_volume_cache();
-/* Read the mixer and timestamp the completed observation. */
-cp0::pulse::VolumeSample read_mixer_volume(const std::atomic<bool> *stop_requested = nullptr);
-/* Publish a mixer observation and return the value the shared cache holds. */
-int publish_mixer_volume(cp0::pulse::VolumeSample sample);
+/* Read the mixer for the caller without updating the shared cache. */
+int read_mixer_volume(const std::atomic<bool> *stop_requested = nullptr);
 
 int adjust_volume(int delta_percent);
 int adjust_brightness(int delta_percent);

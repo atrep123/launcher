@@ -53,7 +53,7 @@ def test_seed_falls_back_to_the_persisted_config_only_without_a_cache():
         function_body(SOURCE, "void LvSettingVolumePage3::initialize_page")
     )
 
-    assert "launcher_media_controls::has_cached_volume" in body
+    assert "cached >= 0 ? cached" in body
     assert "read_saved_volume" in body
     assert body.index("cached_volume") < body.index("read_saved_volume"), (
         "the launcher cache is the primary seed; the persisted key is a fallback"
@@ -92,22 +92,20 @@ def test_failed_read_does_not_restore_the_100_percent_default():
     assert "select_volume(selection_for_volume(backend_volume_));" in read_branch
 
 
-def test_settings_initial_read_uses_the_value_held_by_the_shared_cache():
+def test_settings_initial_read_uses_its_own_mixer_value():
     read = normalized(function_body(SOURCE, "static LvSettingVolumePage3::VolumeResponse read_volume()"))
     handle = normalized(function_body(SOURCE, "void LvSettingVolumePage3::handle_volume_result("))
 
     assert "launcher_media_controls::read_mixer_volume()" in read
-    assert "sample.observed_at" in read
     assert "GetInt" not in read
-    assert "publish_mixer_volume({result.value, result.observed_at})" in handle
+    assert "const int current = valid ? result.value" in handle
     assert "original_volume_ = current" in handle
 
 
-def test_mixer_writes_publish_from_the_request_worker():
+def test_mixer_writes_request_a_worker_refresh():
     write = normalized(function_body(SOURCE, "static LvSettingVolumePage3::VolumeResponse write_volume(int value)"))
 
-    assert write.index('"VolumeWrite"') < write.index("publish_mixer_volume")
-    assert "publish_mixer_volume({result.value, result.observed_at})" in write
+    assert write.index('"VolumeWrite"') < write.index("refresh_volume_cache")
 
 
 def test_launcher_startup_starts_and_stops_the_cache():

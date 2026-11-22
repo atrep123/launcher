@@ -112,12 +112,18 @@ void exercise_stalled_read()
 
 namespace cp0::pulse {
 
-VolumeSample read_test_server_volume_sample(const std::atomic<bool> *);
+int read_test_server_volume(const std::atomic<bool> *);
+int read_test_server_volume();
 
-VolumeSample read_default_sink_volume_sample(const std::atomic<bool> *stop)
+int read_default_sink_volume()
 {
-    const auto sample = read_test_server_volume_sample(stop);
-    if (stop && sample.percent >= 0 && hold_completed_read.load()) {
+    return read_test_server_volume();
+}
+
+int read_default_sink_volume(const std::atomic<bool> *stop)
+{
+    const auto sample = read_test_server_volume(stop);
+    if (stop && sample >= 0 && hold_completed_read.load()) {
         sample_waiting = true;
         // Return an already completed observation even if stop is requested
         // while it is in transit to the worker's cache publication.
@@ -181,12 +187,13 @@ int main()
     }
     assert(cached_volume() == 100);
     assert(adjust_volume(-10) == 10);
-    assert(read_default_sink_volume() == 10 && saved_volume == 10 && cached_volume() == 10);
+    assert(read_default_sink_volume() == 10 && saved_volume == 10 && cached_volume() == 100);
     {
         std::lock_guard<std::mutex> lock(watcher_mutex);
         hold_notification = false;
         watcher_changed.notify_all();
     }
+    wait_for_volume(10);
     std::puts("PASS delayed notification: 100% cached, 20% mixer -> 10%");
 
     run("pactl set-sink-volume launcher_a 20%");
@@ -230,18 +237,15 @@ int main()
                }) == -1);
     expect(read_default_sink_volume() == 20, "rollback has a fresh budget after the write deadline expires");
 
-    VolumeSample rollback_sample;
     const int rollback = adjust_default_sink_volume(
         [](int) { return 55; },
         [](int, int) {
             run(R"SH(kill -STOP $(cat "$PULSE_RUNTIME_PATH/pid"))SH");
             return false;
-        },
-        &rollback_sample);
+        });
     run(R"SH(kill -CONT $(cat "$PULSE_RUNTIME_PATH/pid"))SH");
-    expect(rollback == kVolumeRollbackFailed && rollback_sample.percent == -1 &&
-               rollback_sample.observed_at != VolumeTime{},
-           "an unconfirmed rollback returns a distinct status and an unknown mixer sample");
+    expect(rollback == kVolumeRollbackFailed,
+           "an unconfirmed rollback returns a distinct status");
 
     // Reestablish the expected value before exercising the server outage.
     run("pactl set-sink-volume launcher_a 10%");
@@ -266,39 +270,6 @@ int main()
     hold_completed_read = false;
     expect(cached_volume() == 30, "a completed refresh cannot publish after shutdown");
     std::puts("PASS HOME request returns during outage; reconnect reads 40% and steps to 30%");
-
-    // Settings starts first but does not access the mixer until after the worker read.
-    run("pactl set-sink-volume launcher_a 100%");
-    std::mutex settings_mutex;
-    std::condition_variable settings_cv;
-    bool settings_started = false;
-    bool finish_settings = false;
-    VolumeSample settings_sample;
-    std::thread settings([&] {
-        std::unique_lock<std::mutex> lock(settings_mutex);
-        settings_started = true;
-        settings_cv.notify_one();
-        settings_cv.wait(lock, [&] { return finish_settings; });
-        lock.unlock();
-        settings_sample = read_mixer_volume();
-    });
-    {
-        std::unique_lock<std::mutex> lock(settings_mutex);
-        settings_cv.wait(lock, [&] { return settings_started; });
-    }
-    const auto worker_sample = read_mixer_volume();
-    assert(worker_sample.percent == 100);
-    assert(publish_mixer_volume(worker_sample) == 100);
-    run("pactl set-sink-volume launcher_a 20%");
-    {
-        std::lock_guard<std::mutex> lock(settings_mutex);
-        finish_settings = true;
-    }
-    settings_cv.notify_one();
-    settings.join();
-    assert(settings_sample.percent == 20);
-    expect(publish_mixer_volume(settings_sample) == 20 && cached_volume() == 20,
-           "Settings started first but observed 20% after the worker observed 100%");
 
     exercise_stalled_read();
     return passed ? 0 : 1;

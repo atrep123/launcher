@@ -201,14 +201,12 @@ struct SinkState {
     bool ok = false;
     std::uint32_t index = 0;
     PaCVolume volume{};
-    VolumeTime observed_at{};
     int mute = 0;
 };
 
 struct SuccessState {
     bool done = false;
     bool ok = false;
-    VolumeTime observed_at{};
 };
 
 void server_info_cb(pa_context *, const PaServerInfo *info, void *userdata)
@@ -232,7 +230,6 @@ void sink_info_cb(pa_context *, const PaSinkInfo *info, int eol, void *userdata)
     if (info) {
         state->index = info->index;
         state->volume = info->volume;
-        state->observed_at = std::chrono::steady_clock::now();
         state->mute = info->mute;
         state->ok = state->volume.channels > 0 && state->volume.channels <= kPaChannelsMax;
     }
@@ -244,7 +241,6 @@ void success_cb(pa_context *, int success, void *userdata)
     auto *state = static_cast<SuccessState *>(userdata);
     state->done = true;
     state->ok = success != 0;
-    state->observed_at = std::chrono::steady_clock::now();
 }
 
 void sink_or_server_changed(pa_context *, int, std::uint32_t, void *userdata)
@@ -300,7 +296,6 @@ public:
         if (!run(api_->get_sink_info_by_name(context_, name.c_str(), &sink_info_cb, &state), state)) return false;
         sink_index_ = state.index;
         sink_volume_ = state.volume;
-        sink_observed_at_ = state.observed_at;
         sink_mute_ = state.mute;
         return true;
     }
@@ -341,8 +336,6 @@ public:
     }
 
     int volume_percent() const { return percent_from_volume_scale(sink_volume_.values[0]); }
-    VolumeTime sink_observed_at() const { return sink_observed_at_; }
-    VolumeTime write_observed_at() const { return write_observed_at_; }
     bool muted() const { return sink_mute_ != 0; }
 
 private:
@@ -351,10 +344,7 @@ private:
     bool write_volume(const PaCVolume &volume)
     {
         SuccessState state;
-        if (!run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state))
-            return false;
-        write_observed_at_ = state.observed_at;
-        return true;
+        return run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state);
     }
 
     bool pump()
@@ -414,8 +404,6 @@ private:
     std::chrono::steady_clock::time_point deadline_{};
     std::uint32_t sink_index_ = 0;
     PaCVolume sink_volume_{};
-    VolumeTime sink_observed_at_{};
-    VolumeTime write_observed_at_{};
     int sink_mute_ = 0;
 };
 
@@ -463,17 +451,17 @@ bool default_sink_name(std::string &name)
     return session.default_sink(name);
 }
 
-VolumeSample read_default_sink_volume_sample(const std::atomic<bool> *stop_requested)
+int read_default_sink_volume(const std::atomic<bool> *stop_requested)
 {
     Session session(stop_requested);
     std::string name;
-    if (!session.open() || !session.default_sink(name) || !session.sink(name)) return {};
-    return {session.volume_percent(), session.sink_observed_at()};
+    if (!session.open() || !session.default_sink(name) || !session.sink(name)) return -1;
+    return session.volume_percent();
 }
 
 int read_default_sink_volume()
 {
-    return read_default_sink_volume_sample().percent;
+    return read_default_sink_volume(nullptr);
 }
 
 int write_default_sink_volume(int percent)
@@ -490,9 +478,8 @@ int write_default_sink_volume(int percent)
 }
 
 int adjust_default_sink_volume(const std::function<int(int)> &target,
-                               const std::function<bool(int, int)> &persist, VolumeSample *observed)
+                               const std::function<bool(int, int)> &persist)
 {
-    if (observed) *observed = {};
     Session session;
     std::string name;
     if (!session.open() || !session.default_sink(name) || !session.sink(name)) return -1;
@@ -511,13 +498,8 @@ int adjust_default_sink_volume(const std::function<int(int)> &target,
         const bool restored = session.restore_volume();
         std::fprintf(stderr, "APPLaunch: volume save failed; sink %s rollback %s\n", name.c_str(),
                      restored ? "confirmed" : "not confirmed");
-        if (observed) {
-            *observed = restored ? VolumeSample{previous, session.write_observed_at()}
-                                 : VolumeSample{-1, std::chrono::steady_clock::now()};
-        }
         return restored ? -1 : kVolumeRollbackFailed;
     }
-    if (observed) *observed = {percent, session.write_observed_at()};
     if (session.muted()) (void)session.set_mute(false);
     return percent;
 }

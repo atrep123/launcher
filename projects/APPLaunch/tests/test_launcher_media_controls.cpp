@@ -31,7 +31,7 @@ eventpp::CallbackList<void(std::list<std::string>, std::function<void(int, std::
 
 namespace {
 
-int sink_volume = 63;
+std::atomic<int> sink_volume{63};
 int configured_volume = 80;
 int backlight_maximum = 255;
 int backlight_value = 102;
@@ -55,11 +55,6 @@ std::size_t count_commands(const std::string &command)
 {
     return static_cast<std::size_t>(
         std::count(audio_commands.begin(), audio_commands.end(), command));
-}
-
-int publish_current_volume(int percent)
-{
-    return launcher_media_controls::publish_mixer_volume({percent, std::chrono::steady_clock::now()});
 }
 
 bool wait_for_cached_volume(int expected, int timeout_ms = 3000)
@@ -89,6 +84,7 @@ int main()
            std::function<void(int, std::string)> callback) {
             assert(!arguments.empty());
             const std::string command = arguments.front();
+            std::unique_lock<std::mutex> lock(read_mutex);
             audio_commands.push_back(command);
 
             if (command == "MuteRead") {
@@ -98,14 +94,11 @@ int main()
                 ++mute_toggles;
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "VolumeRead") {
-                {
-                    std::unique_lock<std::mutex> lock(read_mutex);
-                    if (check_refresh_thread) assert(std::this_thread::get_id() != refresh_caller);
-                    if (block_read) {
-                        read_pending = true;
-                        read_changed.notify_one();
-                        read_changed.wait(lock, [] { return release_read; });
-                    }
+                if (check_refresh_thread) assert(std::this_thread::get_id() != refresh_caller);
+                if (block_read) {
+                    read_pending = true;
+                    read_changed.notify_one();
+                    read_changed.wait(lock, [] { return release_read; });
                 }
                 if (fail_next_read) {
                     fail_next_read = false;
@@ -189,7 +182,11 @@ int main()
 
     // Issue #264: HOME remembers 100%, but an external app leaves the
     // sink at 20%. The shortcut must read it before writing the next step.
-    publish_current_volume(100);
+    sink_volume = 100;
+    launcher_media_controls::start_volume_cache();
+    assert(wait_for_cached_volume(100));
+    launcher_media_controls::stop_volume_cache();
+    const auto cached_reads = count_commands("VolumeRead");
     sink_volume = 20;
     const int adjusted_volume = launcher_media_controls::adjust_volume(-10);
     if (adjusted_volume != 10)
@@ -199,24 +196,17 @@ int main()
     assert(!sink_muted);
     assert(sink_volume == 10);
     assert(configured_volume == 10);
-    assert(launcher_media_controls::cached_volume() == 10);
+    assert(launcher_media_controls::cached_volume() == 100);
     assert(mute_toggles == 1);
-    assert(count_commands("VolumeRead") == startup_reads + 1);
+    assert(count_commands("VolumeRead") == cached_reads + 1);
     assert(audio_commands[audio_commands.size() - 4] == "VolumeRead");
     assert(audio_commands[audio_commands.size() - 3] == "VolumeWrite");
 
     // Mixer and Settings can report a level between shortcut increments.
     sink_volume = 82;
-    publish_current_volume(82);
-    assert(launcher_media_controls::cached_volume() == 82);
     assert(launcher_media_controls::adjust_volume(-10) == 70);
     assert(sink_volume == 70);
     assert(configured_volume == 70);
-    assert(launcher_media_controls::cached_volume() == 70);
-
-    publish_current_volume(150);
-    assert(launcher_media_controls::cached_volume() == 100);
-    launcher_media_controls::publish_mixer_volume({});
     assert(launcher_media_controls::cached_volume() == 100);
 
     // A launcher restart re-reads the mixer and replaces the cache.
@@ -226,15 +216,9 @@ int main()
     launcher_media_controls::stop_volume_cache();
     assert(launcher_media_controls::cached_volume() == 63);
 
-    // A Settings observation can reach the UI after the worker publishes
-    // a newer level. Settings must receive the level actually held in cache.
-    sink_volume = 100;
-    const auto earlier_read = launcher_media_controls::read_mixer_volume();
     sink_volume = 20;
-    const auto later_read = launcher_media_controls::read_mixer_volume();
-    assert(launcher_media_controls::publish_mixer_volume(later_read) == 20);
-    assert(launcher_media_controls::publish_mixer_volume(earlier_read) == 20);
-    assert(launcher_media_controls::cached_volume() == 20);
+    assert(launcher_media_controls::read_mixer_volume() == 20);
+    assert(launcher_media_controls::cached_volume() == 63);
 
     // Failure leaves the persisted and mixer levels alone, even if the very
     // next command could reach a recovered server.
@@ -242,12 +226,12 @@ int main()
     fail_next_read = true;
     const auto writes_before_failure = count_commands("VolumeWrite");
     const auto config_writes_before_failure = config_writes;
-    assert(launcher_media_controls::adjust_volume(-10) == 20);
+    assert(launcher_media_controls::adjust_volume(-10) == 63);
     assert(sink_volume == 40);
     assert(count_commands("VolumeWrite") == writes_before_failure);
     assert(config_writes == config_writes_before_failure);
     assert(launcher_media_controls::adjust_volume(-10) == 30);
-    assert(launcher_media_controls::cached_volume() == 30);
+    assert(launcher_media_controls::cached_volume() == 63);
 
     // The caller returns before the worker's blocked mixer read can finish.
     sink_volume = 42;

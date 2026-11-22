@@ -100,13 +100,11 @@ private:
         auto state = std::make_shared<WaitState>();
         try {
             invoker(args, [state](int code, std::string data) noexcept {
-                const auto completed_at = std::chrono::steady_clock::now();
                 try {
                     std::lock_guard<std::mutex> lock(state->mutex);
                     if (state->completed) return;
                     state->response.code = code;
                     state->response.data = std::move(data);
-                    state->response.completed_at = completed_at;
                     state->completed = true;
                     state->condition.notify_one();
                 } catch (...) {
@@ -123,7 +121,7 @@ private:
 
     static LvSettingVolumePage3::VolumeResponse decode_volume(const LvSettingVolumePage3::Response &response)
     {
-        LvSettingVolumePage3::VolumeResponse result{response.code, -1, response.data, response.completed_at};
+        LvSettingVolumePage3::VolumeResponse result{response.code, -1, response.data};
         if (response.code != 0 || !parse_integer(response.data,
                                                  LvSettingVolumePage3::metric(LvSettingVolumePage3::LayoutMetric::MinVolume),
                                                  LvSettingVolumePage3::metric(LvSettingVolumePage3::LayoutMetric::MaxVolume),
@@ -152,16 +150,13 @@ public:
 
     static LvSettingVolumePage3::VolumeResponse read_volume()
     {
-        const auto sample = launcher_media_controls::read_mixer_volume();
-        if (!volume_value_valid(sample.percent))
+        const int volume = launcher_media_controls::read_mixer_volume();
+        if (!volume_value_valid(volume))
             return {static_cast<int>(ErrorCode::Invalid), -1, "unable to read volume"};
-        return {0, sample.percent, {}, sample.observed_at};
+        return {0, volume, {}};
     }
 
-    // The persisted key is only a fallback: the launcher caches the mixer
-    // volume at startup, and that cache is what the shortcut OSD and this page
-    // must both render. A page opened before the startup read completed keeps
-    // the persisted value and the asynchronous read below refreshes both.
+    // Use the persisted value as an initial fallback when the cache is empty.
     static int read_saved_volume(int fallback)
     {
         const auto saved = decode_volume(invoke_config_default(
@@ -193,8 +188,7 @@ public:
             return {static_cast<int>(ErrorCode::Invalid), -1, "volume out of range"};
         const auto result = decode_volume(
             invoke_default({"VolumeWrite", std::to_string(value)}, std::chrono::milliseconds(3000)));
-        if (result.code == 0 &&
-            launcher_media_controls::publish_mixer_volume({result.value, result.observed_at}) != result.value)
+        if (result.code == 0)
             launcher_media_controls::refresh_volume_cache();
         return result;
     }
@@ -318,10 +312,10 @@ void LvSettingVolumePage3::initialize_page(lv_obj_t *parent, std::function<void(
     LeaveSelfPage = [this] { request_back(); };
     // Seed the first frame from the same volume as the shortcut OSD.
     // Use the persisted key until the cache has a value. The asynchronous
-    // mixer read below refreshes the page and the cache when it returns.
-    const int saved = launcher_media_controls::has_cached_volume()
-                          ? launcher_media_controls::cached_volume()
-                          : settings_audio_com::read_saved_volume(metric(LayoutMetric::MaxVolume));
+    // mixer read below refreshes the page when it returns.
+    const int cached = launcher_media_controls::cached_volume();
+    const int saved = cached >= 0 ? cached
+                                  : settings_audio_com::read_saved_volume(metric(LayoutMetric::MaxVolume));
     original_volume_        = saved;
     backend_volume_         = saved;
     last_preview_requested_ = saved;
@@ -538,9 +532,7 @@ void LvSettingVolumePage3::handle_volume_result(const ActiveRequest &request,
 
     const bool valid = result.code == 0 && settings_audio_com::volume_value_valid(result.value);
     if (request.kind == RequestKind::Read) {
-        const int current = valid
-            ? launcher_media_controls::publish_mixer_volume({result.value, result.observed_at})
-            : launcher_media_controls::cached_volume();
+        const int current = valid ? result.value : launcher_media_controls::cached_volume();
         if (current >= 0) {
             original_volume_        = current;
             backend_volume_         = current;

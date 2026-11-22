@@ -22,7 +22,7 @@ CONF
 # Keep the real subscription and delay delivery before the application sees it.
 ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
     -I"$cp0/include" -Dwatch_default_sink_changes=watch_test_server \
-    -Dread_default_sink_volume_sample=read_test_server_volume_sample \
+    -Dread_default_sink_volume=read_test_server_volume \
     -c "$cp0/src/cp0/cp0_pulse_client.cpp" -o "$VOLUME_TEST_DIR/pulse.o"
 ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror -pthread -DCONFIG_CP0_LVGL_INIT_AUDIO \
     -I"$cp0/include" -I"$cp0/src/cp0" -I"$ui" \
