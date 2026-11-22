@@ -50,6 +50,7 @@ public:
         int code = -3;
         int value = -1;
         std::string data;
+        uint64_t revision = 0;
     };
 
     bool ready() const;

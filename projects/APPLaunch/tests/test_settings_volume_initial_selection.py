@@ -92,20 +92,21 @@ def test_failed_read_does_not_restore_the_100_percent_default():
     assert "select_volume(selection_for_volume(backend_volume_));" in read_branch
 
 
-def test_mixer_results_refresh_the_shared_cache():
-    body = normalized(
-        function_body(SOURCE, "void LvSettingVolumePage3::handle_volume_result(")
-    )
-    cache = "launcher_media_controls::update_cached_volume"
+def test_only_revisioned_mixer_reads_refresh_the_shared_cache():
+    read = normalized(function_body(SOURCE, "static LvSettingVolumePage3::VolumeResponse read_volume()"))
+    handle = normalized(function_body(SOURCE, "void LvSettingVolumePage3::handle_volume_result("))
 
-    assert cache in body, "the page must publish mixer results to the shared cache"
-    read_branch = body[
-        body.index("RequestKind::Read") : body.index("RequestKind::RestoreWrite")
-    ]
-    assert cache in read_branch, "the mixer read must refresh the shared cache"
+    assert read.index("begin_volume_operation()") < read.index('"VolumeRead"')
+    assert "result.revision = revision" in read
+    assert "GetInt" not in read
+    assert "publish_mixer_volume( valid ? result.value : -1, result.revision)" in handle
 
-    write_branch = body[body.index("if (!valid)") :]
-    assert cache in write_branch, "preview/commit writes must refresh the shared cache"
+
+def test_mixer_writes_publish_from_the_request_worker():
+    write = normalized(function_body(SOURCE, "static LvSettingVolumePage3::VolumeResponse write_volume(int value)"))
+
+    assert write.index("begin_volume_operation()") < write.index('"VolumeWrite"')
+    assert "publish_mixer_volume(result.value, revision)" in write
 
 
 def test_launcher_startup_starts_and_stops_the_cache():
@@ -114,3 +115,9 @@ def test_launcher_startup_starts_and_stops_the_cache():
 
     assert "launcher_media_controls::start_volume_cache()" in init_body
     assert "launcher_media_controls::stop_volume_cache()" in deinit_body
+
+
+if __name__ == "__main__":
+    for name, test in list(globals().items()):
+        if name.startswith("test_"):
+            test()

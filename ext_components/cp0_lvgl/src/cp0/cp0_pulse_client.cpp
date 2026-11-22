@@ -107,9 +107,9 @@ struct PulseApi {
     void (*context_unref)(pa_context *) = nullptr;
     pa_operation *(*get_server_info)(pa_context *, ServerInfoCallback, void *) = nullptr;
     pa_operation *(*get_sink_info_by_name)(pa_context *, const char *, SinkInfoCallback, void *) = nullptr;
-    pa_operation *(*set_sink_volume_by_name)(pa_context *, const char *, const PaCVolume *, SuccessCallback,
+    pa_operation *(*set_sink_volume_by_index)(pa_context *, std::uint32_t, const PaCVolume *, SuccessCallback,
                                              void *) = nullptr;
-    pa_operation *(*set_sink_mute_by_name)(pa_context *, const char *, int, SuccessCallback, void *) = nullptr;
+    pa_operation *(*set_sink_mute_by_index)(pa_context *, std::uint32_t, int, SuccessCallback, void *) = nullptr;
     void (*set_subscribe_callback)(pa_context *, SubscribeCallback, void *) = nullptr;
     pa_operation *(*subscribe)(pa_context *, int, SuccessCallback, void *) = nullptr;
     int (*operation_get_state)(pa_operation *) = nullptr;
@@ -121,7 +121,7 @@ struct PulseApi {
         return handle && mainloop_new && mainloop_get_api && mainloop_prepare && mainloop_poll &&
                mainloop_dispatch && mainloop_free && context_new && context_connect && context_get_state &&
                context_disconnect && context_unref && get_server_info && get_sink_info_by_name &&
-               set_sink_volume_by_name && set_sink_mute_by_name && operation_get_state &&
+               set_sink_volume_by_index && set_sink_mute_by_index && operation_get_state &&
                operation_cancel && operation_unref;
     }
 };
@@ -164,10 +164,10 @@ const PulseApi *pulse_api()
             resolve_symbol<decltype(loaded.get_server_info)>(loaded.handle, "pa_context_get_server_info");
         loaded.get_sink_info_by_name = resolve_symbol<decltype(loaded.get_sink_info_by_name)>(
             loaded.handle, "pa_context_get_sink_info_by_name");
-        loaded.set_sink_volume_by_name = resolve_symbol<decltype(loaded.set_sink_volume_by_name)>(
-            loaded.handle, "pa_context_set_sink_volume_by_name");
-        loaded.set_sink_mute_by_name = resolve_symbol<decltype(loaded.set_sink_mute_by_name)>(
-            loaded.handle, "pa_context_set_sink_mute_by_name");
+        loaded.set_sink_volume_by_index = resolve_symbol<decltype(loaded.set_sink_volume_by_index)>(
+            loaded.handle, "pa_context_set_sink_volume_by_index");
+        loaded.set_sink_mute_by_index = resolve_symbol<decltype(loaded.set_sink_mute_by_index)>(
+            loaded.handle, "pa_context_set_sink_mute_by_index");
         loaded.set_subscribe_callback = resolve_symbol<decltype(loaded.set_subscribe_callback)>(
             loaded.handle, "pa_context_set_subscribe_callback");
         loaded.subscribe = resolve_symbol<decltype(loaded.subscribe)>(loaded.handle, "pa_context_subscribe");
@@ -196,6 +196,7 @@ struct NameState {
 struct SinkState {
     bool done = false;
     bool ok = false;
+    std::uint32_t index = 0;
     std::uint8_t channels = 0;
     std::uint32_t volume = 0;
     int mute = 0;
@@ -226,6 +227,7 @@ void sink_info_cb(pa_context *, const PaSinkInfo *info, int eol, void *userdata)
     }
     if (info) {
         const auto channels = std::min<std::size_t>(info->volume.channels, kPaChannelsMax);
+        state->index = info->index;
         state->channels = static_cast<std::uint8_t>(channels);
         state->volume = info->volume.values[0];
         state->mute = info->mute;
@@ -291,13 +293,14 @@ public:
     {
         SinkState state;
         if (!run(api_->get_sink_info_by_name(context_, name.c_str(), &sink_info_cb, &state), state)) return false;
+        sink_index_ = state.index;
         sink_channels_ = state.channels;
         sink_volume_ = state.volume;
         sink_mute_ = state.mute;
         return true;
     }
 
-    bool set_volume(const std::string &name, int percent)
+    bool set_volume(int percent)
     {
         if (sink_channels_ == 0) return false;
 
@@ -307,13 +310,13 @@ public:
         for (std::uint8_t channel = 0; channel < sink_channels_; ++channel) volume.values[channel] = target;
 
         SuccessState state;
-        return run(api_->set_sink_volume_by_name(context_, name.c_str(), &volume, &success_cb, &state), state);
+        return run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state);
     }
 
-    bool set_mute(const std::string &name, bool muted)
+    bool set_mute(bool muted)
     {
         SuccessState state;
-        return run(api_->set_sink_mute_by_name(context_, name.c_str(), muted ? 1 : 0, &success_cb, &state), state);
+        return run(api_->set_sink_mute_by_index(context_, sink_index_, muted ? 1 : 0, &success_cb, &state), state);
     }
 
     bool subscribe_to_sink_changes(bool &changed)
@@ -387,6 +390,7 @@ private:
     pa_mainloop *mainloop_ = nullptr;
     pa_context *context_ = nullptr;
     std::chrono::steady_clock::time_point deadline_{};
+    std::uint32_t sink_index_ = 0;
     std::uint8_t sink_channels_ = 0;
     std::uint32_t sink_volume_ = 0;
     int sink_mute_ = 0;
@@ -413,6 +417,7 @@ bool preload()
 }
 
 void watch_default_sink_changes(const std::atomic<bool> &stop_requested,
+                                std::atomic<bool> &refresh_requested,
                                 const std::function<void()> &refresh)
 {
     // The subscription callback only records an event. Reads run after
@@ -422,7 +427,8 @@ void watch_default_sink_changes(const std::atomic<bool> &stop_requested,
     if (stop_requested.load() || !session.open() || !session.subscribe_to_sink_changes(changed)) return;
 
     while (!stop_requested.load()) {
-        if (std::exchange(changed, false)) refresh();
+        const bool requested = refresh_requested.exchange(false);
+        if (std::exchange(changed, false) || requested) refresh();
         if (!stop_requested.load() && !session.wait_for_sink_changes()) return;
     }
 }
@@ -455,7 +461,25 @@ int write_default_sink_volume(int percent)
     std::string name;
     if (!session.default_sink(name)) return -1;
     if (!session.sink(name)) return -1;
-    return session.set_volume(name, clamped) ? clamped : -1;
+    return session.set_volume(clamped) ? clamped : -1;
+}
+
+int adjust_default_sink_volume(const std::function<int(int)> &target,
+                               const std::function<bool(int, int)> &persist)
+{
+    Session session;
+    std::string name;
+    if (!session.open() || !session.default_sink(name) || !session.sink(name)) return -1;
+
+    const int previous = session.volume_percent();
+    const int percent = std::clamp(target(previous), 0, 100);
+    if (!session.set_volume(percent)) return -1;
+    if (!persist(previous, percent)) {
+        (void)session.set_volume(previous);
+        return -1;
+    }
+    if (session.muted()) (void)session.set_mute(false);
+    return percent;
 }
 
 int read_default_sink_mute()
@@ -479,7 +503,7 @@ int toggle_default_sink_mute()
     if (!session.sink(name)) return -1;
 
     const bool target = !session.muted();
-    if (!session.set_mute(name, target)) return -1;
+    if (!session.set_mute(target)) return -1;
     return target ? 1 : 0;
 }
 

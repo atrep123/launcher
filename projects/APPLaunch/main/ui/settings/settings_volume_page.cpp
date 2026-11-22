@@ -150,13 +150,10 @@ public:
 
     static LvSettingVolumePage3::VolumeResponse read_volume()
     {
-        const auto backend = decode_volume(invoke_default({"VolumeRead"}, std::chrono::milliseconds(3000)));
-        if (backend.code == 0) return backend;
-
-        // Use the same persisted value as the shortcut path when the mixer is unavailable.
-        const auto saved = decode_volume(
-            invoke_config_default({"GetInt", "volume", "50"}, std::chrono::milliseconds(3000)));
-        return saved.code == 0 ? saved : backend;
+        const auto revision = launcher_media_controls::begin_volume_operation();
+        auto result = decode_volume(invoke_default({"VolumeRead"}, std::chrono::milliseconds(3000)));
+        result.revision = revision;
+        return result;
     }
 
     // The persisted key is only a fallback: the launcher caches the mixer
@@ -192,7 +189,13 @@ public:
     {
         if (!volume_value_valid(value))
             return {static_cast<int>(ErrorCode::Invalid), -1, "volume out of range"};
-        return decode_volume(invoke_default({"VolumeWrite", std::to_string(value)}, std::chrono::milliseconds(3000)));
+        const auto revision = launcher_media_controls::begin_volume_operation();
+        const auto result = decode_volume(
+            invoke_default({"VolumeWrite", std::to_string(value)}, std::chrono::milliseconds(3000)));
+        if (result.code == 0 &&
+            launcher_media_controls::publish_mixer_volume(result.value, revision) != result.value)
+            launcher_media_controls::refresh_volume_cache();
+        return result;
     }
 
     static LvSettingVolumePage3::Response play_system_sound(int index)
@@ -534,24 +537,17 @@ void LvSettingVolumePage3::handle_volume_result(const ActiveRequest &request,
 
     const bool valid = result.code == 0 && settings_audio_com::volume_value_valid(result.value);
     if (request.kind == RequestKind::Read) {
-        if (valid) {
-            /* The mixer is authoritative; publish what it reports so the
-             * shortcut OSD and every later render share this value. */
-            launcher_media_controls::update_cached_volume(result.value);
-            original_volume_       = result.value;
-            backend_volume_        = result.value;
-            last_preview_requested_ = result.value;
-            last_preview_actual_    = result.value;
-            ready_                  = true;
-            last_error_.clear();
-            select_volume(selection_for_volume(result.value));
-        } else {
-            // Keep the persisted value seeded at page open: a failed mixer
-            // read must not drag the selection back to the 100% default.
-            ready_      = true;
-            last_error_ = result.data.empty() ? "unable to read volume" : result.data;
-            select_volume(selection_for_volume(backend_volume_));
+        const int current = launcher_media_controls::publish_mixer_volume(
+            valid ? result.value : -1, result.revision);
+        if (current >= 0) {
+            original_volume_        = current;
+            backend_volume_         = current;
+            last_preview_requested_ = current;
+            last_preview_actual_    = current;
         }
+        ready_ = true;
+        last_error_ = valid ? "" : (result.data.empty() ? "unable to read volume" : result.data);
+        select_volume(selection_for_volume(backend_volume_));
         if (back_requested_) finish_back();
         return;
     }
@@ -562,7 +558,6 @@ void LvSettingVolumePage3::handle_volume_result(const ActiveRequest &request,
         commit_leave_requested_ = false;
         if (valid) {
             backend_volume_ = result.value;
-            launcher_media_controls::update_cached_volume(result.value);
         } else {
             last_error_ = result.data.empty() ? "unable to restore volume" : result.data;
         }
@@ -582,9 +577,6 @@ void LvSettingVolumePage3::handle_volume_result(const ActiveRequest &request,
     }
 
     backend_volume_ = result.value;
-    /* Preview and commit writes already changed the mixer; keep the shared
-     * cache in step so leaving this page cannot expose a stale value. */
-    launcher_media_controls::update_cached_volume(result.value);
     last_error_.clear();
     if (request.kind == RequestKind::PreviewWrite) {
         handle_preview_success(request);

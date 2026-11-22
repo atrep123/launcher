@@ -34,7 +34,6 @@ struct VolumeCache {
     int volume = -1;
     std::uint64_t next_revision = 0;
     std::uint64_t applied_revision = 0;
-    bool subscription_current = false;
 };
 
 VolumeCache volume_cache;
@@ -56,33 +55,16 @@ int read_mixer_volume()
     return volume;
 }
 
-std::uint64_t begin_volume_read()
-{
-    std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    return ++volume_cache.next_revision;
-}
-
 void publish_volume_locked(int volume, std::uint64_t revision)
 {
     volume_cache.volume = LauncherMediaControlsModel::clamp_percent(volume);
     volume_cache.applied_revision = revision;
 }
 
-int refresh_mixer_volume(bool from_subscription = false)
+void refresh_mixer_volume()
 {
-    std::uint64_t revision;
-    {
-        std::lock_guard<std::mutex> lock(volume_cache.mutex);
-        revision = ++volume_cache.next_revision;
-        if (from_subscription) volume_cache.subscription_current = false;
-    }
-
-    const int volume = read_mixer_volume();
-    std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    if (volume >= 0 && revision > volume_cache.applied_revision)
-        publish_volume_locked(volume, revision);
-    if (from_subscription || volume < 0) volume_cache.subscription_current = volume >= 0;
-    return volume_cache.volume;
+    const auto revision = launcher_media_controls::begin_volume_operation();
+    launcher_media_controls::publish_mixer_volume(read_mixer_volume(), revision);
 }
 
 /* Keep the startup settle window for WirePlumber, then follow mixer events
@@ -98,17 +80,18 @@ public:
         {
             std::lock_guard<std::mutex> lock(mutex_);
             stop_ = false;
+            refresh_requested_ = false;
         }
         worker_ = std::thread([this] {
             try {
                 read_startup_volume();
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
                 follow_mixer();
+#else
+                while (wait_for_refresh()) refresh_if_requested();
 #endif
             } catch (...) {
             }
-            std::lock_guard<std::mutex> lock(volume_cache.mutex);
-            volume_cache.subscription_current = false;
         });
     }
 
@@ -123,6 +106,16 @@ public:
             worker_.join();
     }
 
+    void request_refresh()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stop_.load()) return;
+            refresh_requested_ = true;
+        }
+        wake_.notify_one();
+    }
+
 private:
     bool wait_for_stop(std::chrono::milliseconds interval)
     {
@@ -130,57 +123,64 @@ private:
         return wake_.wait_for(lock, interval, [this] { return stop_.load(); });
     }
 
-    void publish_startup_volume(int volume, std::uint64_t revision)
+    bool wait_for_refresh(std::chrono::milliseconds timeout = std::chrono::milliseconds::max())
     {
-        std::lock_guard<std::mutex> lock(volume_cache.mutex);
-        if (revision > volume_cache.applied_revision && !stop_.load())
-            publish_volume_locked(volume, revision);
+        std::unique_lock<std::mutex> lock(mutex_);
+        const auto ready = [this] { return stop_.load() || refresh_requested_.load(); };
+        if (timeout == std::chrono::milliseconds::max())
+            wake_.wait(lock, ready);
+        else
+            wake_.wait_for(lock, timeout, ready);
+        return !stop_.load();
+    }
+
+    void refresh_if_requested()
+    {
+        if (refresh_requested_.exchange(false) && !stop_.load())
+            refresh_mixer_volume();
     }
 
     void read_startup_volume()
     {
-        const auto revision = begin_volume_read();
         int previous = -1;
         int last_valid = -1;
+        std::uint64_t last_revision = 0;
         for (int attempt = 0; attempt < kStartupVolumeReadAttempts; ++attempt) {
             if (attempt > 0 && wait_for_stop(kStartupVolumeReadInterval))
                 return;
-            if (stop_.load())
-                return;
+            if (stop_.load()) return;
 
+            const auto revision = launcher_media_controls::begin_volume_operation();
             const int volume = read_mixer_volume();
             if (volume < 0) {
                 previous = -1;
                 continue;
             }
             last_valid = volume;
-            if (volume == previous) {
-                publish_startup_volume(volume, revision);
-                return;
-            }
+            last_revision = revision;
+            if (volume == previous) break;
             previous = volume;
         }
-        if (last_valid >= 0)
-            publish_startup_volume(last_valid, revision);
+        if (!stop_.load())
+            launcher_media_controls::publish_mixer_volume(last_valid, last_revision);
     }
 
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
     void follow_mixer()
     {
         while (!stop_.load()) {
-            cp0::pulse::watch_default_sink_changes(stop_, [] { refresh_mixer_volume(true); });
-            {
-                std::lock_guard<std::mutex> lock(volume_cache.mutex);
-                volume_cache.subscription_current = false;
-            }
-            if (wait_for_stop(std::chrono::seconds(2))) return;
+            cp0::pulse::watch_default_sink_changes(stop_, refresh_requested_, refresh_mixer_volume);
+            if (!wait_for_refresh(std::chrono::seconds(2))) return;
+            // Explicit HOME requests also work when a subscription could not be established.
+            refresh_if_requested();
         }
     }
 #endif
 
     std::mutex mutex_;
     std::condition_variable wake_;
-    std::atomic<bool> stop_{false};
+    std::atomic<bool> stop_{true};
+    std::atomic<bool> refresh_requested_{false};
     std::thread worker_;
 };
 
@@ -215,55 +215,43 @@ bool write_config_int(const char *key, int value, int fallback)
     return false;
 }
 
-int read_volume()
+int volume_after_step(int current, int delta_percent)
 {
-    {
-        std::lock_guard<std::mutex> lock(volume_cache.mutex);
-        if (volume_cache.subscription_current && volume_cache.volume >= 0)
-            return volume_cache.volume;
-    }
-
-    const int volume = refresh_mixer_volume();
-    if (volume >= 0) return volume;
-
-    const int fallback = read_config_int("volume", model.volume_or(50));
-    std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    if (volume_cache.volume < 0)
-        publish_volume_locked(fallback, ++volume_cache.next_revision);
-    return volume_cache.volume;
+    const int base = setup_values::round_volume_percent(current);
+    const int delta = delta_percent > 0 ? launcher_media_controls::VOLUME_STEP_PERCENT
+                    : delta_percent < 0 ? -launcher_media_controls::VOLUME_STEP_PERCENT : 0;
+    return LauncherMediaControlsModel::clamp_percent(base + delta);
 }
 
-bool read_mute()
+bool persist_volume(int previous, int written)
 {
-    bool muted = model.muted();
-    cp0_signal_audio_api({"MuteRead"}, [&](int code, std::string data) {
-        int parsed = 0;
-        if (code == 0 && LauncherMediaControlsModel::parse_int(data, parsed) &&
-            (parsed == 0 || parsed == 1)) {
-            muted = parsed != 0;
-            model.set_mute(muted);
-        }
-    });
-    return muted;
+    return write_config_int("volume", written, previous);
 }
 
-int write_volume(int previous, int percent)
+#if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
+int adjust_local_volume(int delta_percent)
 {
-    percent = LauncherMediaControlsModel::clamp_percent(percent);
+    const int previous = read_mixer_volume();
+    if (previous < 0) return -1;
+    const int target = volume_after_step(previous, delta_percent);
     int written = -1;
-    cp0_signal_audio_api({"VolumeWrite", std::to_string(percent)}, [&](int code, std::string data) {
+    cp0_signal_audio_api({"VolumeWrite", std::to_string(target)}, [&](int code, std::string data) {
         int parsed = 0;
         if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) written = parsed;
     });
-    if (written < 0) return previous;
-    if (!write_config_int("volume", written, previous)) {
+    if (written < 0) return -1;
+    if (!persist_volume(previous, written)) {
         cp0_signal_audio_api({"VolumeWrite", std::to_string(previous)}, nullptr);
-        return previous;
+        return -1;
     }
-    model.set_volume(written);
-    launcher_media_controls::update_cached_volume(written);
+
+    cp0_signal_audio_api({"MuteRead"}, [](int code, std::string data) {
+        if (code == 0 && data == "1")
+            (void)launcher_media_controls::toggle_mute();
+    });
     return written;
 }
+#endif
 
 int backlight_max()
 {
@@ -359,24 +347,42 @@ void stop_volume_cache()
 
 void refresh_volume_cache()
 {
-    refresh_mixer_volume();
+    volume_cache_worker.request_refresh();
 }
 
-void update_cached_volume(int percent)
+std::uint64_t begin_volume_operation()
 {
     std::lock_guard<std::mutex> lock(volume_cache.mutex);
-    publish_volume_locked(percent, ++volume_cache.next_revision);
+    return ++volume_cache.next_revision;
+}
+
+int publish_mixer_volume(int percent, std::uint64_t revision)
+{
+    std::lock_guard<std::mutex> lock(volume_cache.mutex);
+    if (percent >= 0 && revision > volume_cache.applied_revision)
+        publish_volume_locked(percent, revision);
+    return volume_cache.volume;
 }
 
 int adjust_volume(int delta_percent)
 {
-    if (read_mute())
-        (void)toggle_mute();
-    const int current = read_volume();
-    const int base = setup_values::round_volume_percent(current);
-    const int delta = delta_percent > 0 ? VOLUME_STEP_PERCENT
-                                       : delta_percent < 0 ? -VOLUME_STEP_PERCENT : 0;
-    return write_volume(current, base + delta);
+    const auto revision = begin_volume_operation();
+#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
+    const int written = cp0::pulse::adjust_default_sink_volume(
+        [delta_percent](int current) { return volume_after_step(current, delta_percent); },
+        persist_volume);
+#else
+    const int written = adjust_local_volume(delta_percent);
+#endif
+    if (written >= 0) {
+        model.set_volume(written);
+        if (publish_mixer_volume(written, revision) != written) refresh_volume_cache();
+        return written;
+    }
+
+    // Keep the OSD usable during a disconnect without using its value for writes.
+    const int cached = cached_volume();
+    return cached >= 0 ? cached : read_config_int("volume", model.volume_or(50));
 }
 
 int adjust_brightness(int delta_percent)

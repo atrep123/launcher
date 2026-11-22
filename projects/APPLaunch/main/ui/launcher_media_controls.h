@@ -8,6 +8,8 @@
 
 #include "model/setup_value_policy.hpp"
 
+#include <cstdint>
+
 namespace launcher_media_controls {
 
 constexpr int VOLUME_STEP_PERCENT =
@@ -21,10 +23,12 @@ int cached_volume();
 void start_volume_cache();
 /* Join the mixer reader so teardown cannot race a signal call. */
 void stop_volume_cache();
-/* Re-read after an app exits to cover pending or unavailable notifications. */
+/* Queue a fresh read on the worker after an app exits. */
 void refresh_volume_cache();
-/* Record a value that was just written to the mixer, or read back from it. */
-void update_cached_volume(int percent);
+/* Reserve a revision before accessing the mixer. Publication returns the
+ * current shared value, which can come from a newer operation. */
+std::uint64_t begin_volume_operation();
+int publish_mixer_volume(int percent, std::uint64_t revision);
 
 int adjust_volume(int delta_percent);
 int adjust_brightness(int delta_percent);

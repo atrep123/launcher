@@ -13,9 +13,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <condition_variable>
 #include <functional>
 #include <iterator>
 #include <list>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -40,6 +42,14 @@ int config_writes = 0;
 bool sink_muted = true;
 int mute_toggles = 0;
 std::vector<std::string> audio_commands;
+std::mutex read_mutex;
+std::condition_variable read_changed;
+bool block_read = false;
+bool read_pending = false;
+bool release_read = false;
+bool fail_next_read = false;
+bool check_refresh_thread = false;
+std::thread::id refresh_caller;
 
 std::size_t count_commands(const std::string &command)
 {
@@ -83,7 +93,22 @@ int main()
                 ++mute_toggles;
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "VolumeRead") {
-                reply(callback, 0, std::to_string(sink_volume));
+                {
+                    std::unique_lock<std::mutex> lock(read_mutex);
+                    if (check_refresh_thread) assert(std::this_thread::get_id() != refresh_caller);
+                    if (block_read) {
+                        read_pending = true;
+                        read_changed.notify_one();
+                        read_changed.wait(lock, [] { return release_read; });
+                    }
+                }
+                if (fail_next_read) {
+                    fail_next_read = false;
+                    // The next command would succeed if it attempted a stale write.
+                    reply(callback, -1, "server unavailable");
+                } else {
+                    reply(callback, 0, std::to_string(sink_volume));
+                }
             } else if (command == "VolumeWrite") {
                 assert(arguments.size() == 2);
                 sink_volume = std::stoi(*std::next(arguments.begin()));
@@ -158,9 +183,8 @@ int main()
     assert(startup_reads >= 2);
 
     // Issue #264: HOME remembers 100%, but an external app leaves the
-    // default sink at 20%. With no subscription, the shortcut must re-read
-    // the mixer and write 10%; the Settings seed and OSD share that result.
-    launcher_media_controls::update_cached_volume(100);
+    // sink at 20%. The shortcut must read it before writing the next step.
+    launcher_media_controls::publish_mixer_volume(100, launcher_media_controls::begin_volume_operation());
     sink_volume = 20;
     const int adjusted_volume = launcher_media_controls::adjust_volume(-10);
     if (adjusted_volume != 10)
@@ -173,22 +197,22 @@ int main()
     assert(launcher_media_controls::cached_volume() == 10);
     assert(mute_toggles == 1);
     assert(count_commands("VolumeRead") == startup_reads + 1);
-    assert(audio_commands[audio_commands.size() - 2] == "VolumeRead");
-    assert(audio_commands.back() == "VolumeWrite");
+    assert(audio_commands[audio_commands.size() - 4] == "VolumeRead");
+    assert(audio_commands[audio_commands.size() - 3] == "VolumeWrite");
 
     // Mixer and Settings can report a level between shortcut increments.
     sink_volume = 82;
-    launcher_media_controls::update_cached_volume(82);
+    launcher_media_controls::publish_mixer_volume(82, launcher_media_controls::begin_volume_operation());
     assert(launcher_media_controls::cached_volume() == 82);
     assert(launcher_media_controls::adjust_volume(-10) == 70);
     assert(sink_volume == 70);
     assert(configured_volume == 70);
     assert(launcher_media_controls::cached_volume() == 70);
 
-    launcher_media_controls::update_cached_volume(150);
+    launcher_media_controls::publish_mixer_volume(150, launcher_media_controls::begin_volume_operation());
     assert(launcher_media_controls::cached_volume() == 100);
-    launcher_media_controls::update_cached_volume(-10);
-    assert(launcher_media_controls::cached_volume() == 0);
+    launcher_media_controls::publish_mixer_volume(-10, launcher_media_controls::begin_volume_operation());
+    assert(launcher_media_controls::cached_volume() == 100);
 
     // A launcher restart re-reads the mixer and replaces the cache.
     sink_volume = 63;
@@ -196,6 +220,49 @@ int main()
     assert(wait_for_cached_volume(63));
     launcher_media_controls::stop_volume_cache();
     assert(launcher_media_controls::cached_volume() == 63);
+
+    // A Settings read started before the worker saw an external change.
+    const auto settings_read = launcher_media_controls::begin_volume_operation();
+    const auto worker_read = launcher_media_controls::begin_volume_operation();
+    assert(launcher_media_controls::publish_mixer_volume(20, worker_read) == 20);
+    assert(launcher_media_controls::publish_mixer_volume(100, settings_read) == 20);
+    assert(launcher_media_controls::cached_volume() == 20);
+
+    // Failure leaves the persisted and mixer levels alone, even if the very
+    // next command could reach a recovered server.
+    sink_volume = 40;
+    fail_next_read = true;
+    const auto writes_before_failure = count_commands("VolumeWrite");
+    const auto config_writes_before_failure = config_writes;
+    assert(launcher_media_controls::adjust_volume(-10) == 20);
+    assert(sink_volume == 40);
+    assert(count_commands("VolumeWrite") == writes_before_failure);
+    assert(config_writes == config_writes_before_failure);
+    assert(launcher_media_controls::adjust_volume(-10) == 30);
+    assert(launcher_media_controls::cached_volume() == 30);
+
+    // The caller returns before the worker's blocked mixer read can finish.
+    sink_volume = 42;
+    launcher_media_controls::start_volume_cache();
+    assert(wait_for_cached_volume(42));
+    sink_volume = 46;
+    {
+        std::lock_guard<std::mutex> lock(read_mutex);
+        refresh_caller = std::this_thread::get_id();
+        check_refresh_thread = true;
+        block_read = true;
+    }
+    launcher_media_controls::refresh_volume_cache();
+    {
+        std::unique_lock<std::mutex> lock(read_mutex);
+        assert(read_changed.wait_for(lock, std::chrono::seconds(3), [] { return read_pending; }));
+        assert(launcher_media_controls::cached_volume() == 42);
+        release_read = true;
+        read_changed.notify_one();
+    }
+    assert(wait_for_cached_volume(46));
+    launcher_media_controls::stop_volume_cache();
+    check_refresh_thread = false;
 
     assert(launcher_media_controls::adjust_brightness(-10) == 30);
     assert(backlight_value == 76);
