@@ -1,0 +1,154 @@
+{
+  "idle_system_cpu_pct": {
+    "p50": 0.56,
+    "runs": [
+      0.449,
+      0.629,
+      0.56
+    ]
+  },
+  "idle_launcher_cpu_one_core_pct": {
+    "p50": 0.678,
+    "runs": [
+      0.678,
+      0.598,
+      0.679
+    ]
+  },
+  "idle_wakeups_s": {
+    "p50": 163.024,
+    "runs": [
+      158.74,
+      167.543,
+      163.024
+    ]
+  },
+  "idle_launcher_wakeups_s": {
+    "p50": 80.601,
+    "runs": [
+      80.208,
+      80.601,
+      80.834
+    ]
+  },
+  "idle_battery_states": [
+    "Discharging",
+    "Discharging",
+    "Discharging"
+  ],
+  "idle_battery_mw": {
+    "p50": 779.526,
+    "runs": [
+      779.526,
+      783.065,
+      779.13
+    ]
+  },
+  "updates_s": {
+    "p50": 14.867,
+    "runs": [
+      14.993,
+      14.738,
+      14.867
+    ]
+  },
+  "carousel_updates_s": {
+    "p50": 14.861,
+    "runs": [
+      14.861,
+      14.738,
+      14.867
+    ]
+  },
+  "wide_carousel_updates_s": {
+    "p50": 14.861,
+    "runs": [
+      14.861,
+      14.738,
+      14.867
+    ]
+  },
+  "wide_carousel_spi_ms_by_run": [
+    [
+      10.529,
+      12.463
+    ],
+    [
+      10.536,
+      12.522
+    ],
+    [
+      10.54,
+      12.554
+    ]
+  ],
+  "work_counts_dense": [
+    {
+      "fb_deferred_io_work": 117,
+      "drm_fb_helper_damage_work": 117
+    },
+    {
+      "fb_deferred_io_work": 115,
+      "drm_fb_helper_damage_work": 115
+    },
+    {
+      "fb_deferred_io_work": 118,
+      "drm_fb_helper_damage_work": 118
+    }
+  ],
+  "first_any_ms": {
+    "n": 48,
+    "p50_p95": [
+      6.106,
+      9.597
+    ]
+  },
+  "content_ms": {
+    "n": 48,
+    "p50_p95": [
+      6.106,
+      9.597
+    ]
+  },
+  "first_spi_ms": {
+    "n": 48,
+    "p50_p95": [
+      62.365,
+      65.141
+    ]
+  },
+  "spi_ms": [
+    10.533,
+    12.508
+  ],
+  "wide_spi_ms": [
+    10.533,
+    12.508
+  ],
+  "area_counts": [
+    [
+      "0,25..319,159",
+      175
+    ],
+    [
+      "0,25..319,169",
+      81
+    ],
+    [
+      "0,32..319,159",
+      48
+    ],
+    [
+      "0,0..319,159",
+      25
+    ],
+    [
+      "0,0..319,169",
+      8
+    ],
+    [
+      "0,32..319,169",
+      1
+    ]
+  ]
+}

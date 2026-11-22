@@ -1,0 +1,118 @@
+{
+  "seconds": 25.045686666999245,
+  "system_cpu_pct": 0.52994700529947,
+  "launcher_cpu_one_core_pct": 0.47912441609402817,
+  "wakeups_s": 144.176522209628,
+  "launcher_wakeups_s": 68.27522929339902,
+  "brightness": "0",
+  "battery": "Discharging",
+  "current_voltage": [
+    [
+      -198000,
+      3925000
+    ],
+    [
+      -201000,
+      3921000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -198000,
+      3925000
+    ],
+    [
+      -197000,
+      3925000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -197000,
+      3925000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -202000,
+      3924000
+    ],
+    [
+      -200000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -203000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -197000,
+      3924000
+    ],
+    [
+      -198000,
+      3924000
+    ]
+  ],
+  "stats": {
+    "cpu3": "entries: 756\noverrun: 0\ncommit overrun: 0\nbytes: 30240\noldest event ts: 13643.315962\nnow ts: 13668.317980\ndropped events: 0\nread events: 0",
+    "cpu2": "entries: 875\noverrun: 0\ncommit overrun: 0\nbytes: 35000\noldest event ts: 13643.323997\nnow ts: 13668.318349\ndropped events: 0\nread events: 0",
+    "cpu1": "entries: 1312\noverrun: 0\ncommit overrun: 0\nbytes: 52600\noldest event ts: 13643.316113\nnow ts: 13668.318652\ndropped events: 0\nread events: 0",
+    "cpu0": "entries: 670\noverrun: 0\ncommit overrun: 0\nbytes: 27240\noldest event ts: 13643.315724\nnow ts: 13668.318949\ndropped events: 0\nread events: 0"
+  },
+  "pid": 30901
+}

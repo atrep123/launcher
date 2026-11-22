@@ -1,0 +1,158 @@
+{
+  "presses": [
+    12789170971000,
+    12789821755000,
+    12790472570000,
+    12791123251000,
+    12791773980000,
+    12792424671000,
+    12793075319000,
+    12793725885000,
+    12794376527000,
+    12795027166000,
+    12795677744000,
+    12796328337000,
+    12796979008000,
+    12797629690000,
+    12798280378000,
+    12798930979000,
+    12799581559000,
+    12800232121000,
+    12800882708000,
+    12801533339000,
+    12802183961000,
+    12802834673000,
+    12803485174000,
+    12804135758000
+  ],
+  "samples": [
+    {
+      "t": 12789170971000,
+      "first_any_ms": 14.797025,
+      "content_ms": 14.797025
+    },
+    {
+      "t": 12789821755000,
+      "first_any_ms": 22.55228,
+      "content_ms": 22.55228
+    },
+    {
+      "t": 12790472570000,
+      "first_any_ms": 38.367989,
+      "content_ms": 38.367989
+    },
+    {
+      "t": 12791123251000,
+      "first_any_ms": 22.151034,
+      "content_ms": 22.151034
+    },
+    {
+      "t": 12791773980000,
+      "first_any_ms": 35.967329,
+      "content_ms": 35.967329
+    },
+    {
+      "t": 12792424671000,
+      "first_any_ms": 39.020568,
+      "content_ms": 39.020568
+    },
+    {
+      "t": 12793075319000,
+      "first_any_ms": 33.579178,
+      "content_ms": 33.579178
+    },
+    {
+      "t": 12793725885000,
+      "first_any_ms": 13.809493,
+      "content_ms": 13.809493
+    },
+    {
+      "t": 12794376527000,
+      "first_any_ms": 23.891316,
+      "content_ms": 23.891316
+    },
+    {
+      "t": 12795027166000,
+      "first_any_ms": 33.326745,
+      "content_ms": 33.326745
+    },
+    {
+      "t": 12795677744000,
+      "first_any_ms": 14.318247,
+      "content_ms": 14.318247
+    },
+    {
+      "t": 12796328337000,
+      "first_any_ms": 26.557187,
+      "content_ms": 26.557187
+    },
+    {
+      "t": 12796979008000,
+      "first_any_ms": 38.515637,
+      "content_ms": 38.515637
+    },
+    {
+      "t": 12797629690000,
+      "first_any_ms": 23.987169,
+      "content_ms": 23.987169
+    },
+    {
+      "t": 12798280378000,
+      "first_any_ms": 30.612174,
+      "content_ms": 30.612174
+    },
+    {
+      "t": 12798930979000,
+      "first_any_ms": 11.375682,
+      "content_ms": 11.375682
+    },
+    {
+      "t": 12799581559000,
+      "first_any_ms": 21.331539,
+      "content_ms": 21.331539
+    },
+    {
+      "t": 12800232121000,
+      "first_any_ms": 35.464763,
+      "content_ms": 35.464763
+    },
+    {
+      "t": 12800882708000,
+      "first_any_ms": 14.151492,
+      "content_ms": 14.151492
+    },
+    {
+      "t": 12801533339000,
+      "first_any_ms": 24.80688,
+      "content_ms": 24.80688
+    },
+    {
+      "t": 12802183961000,
+      "first_any_ms": 40.720787,
+      "content_ms": 40.720787
+    },
+    {
+      "t": 12802834673000,
+      "first_any_ms": 22.22184,
+      "content_ms": 22.22184
+    },
+    {
+      "t": 12803485174000,
+      "first_any_ms": 31.440172,
+      "content_ms": 31.440172
+    },
+    {
+      "t": 12804135758000,
+      "first_any_ms": 11.613987,
+      "content_ms": 11.613987
+    }
+  ],
+  "stats": {
+    "cpu3": "entries: 614\noverrun: 0\ncommit overrun: 0\nbytes: 34008\noldest event ts: 12789.105499\nnow ts: 12805.127989\ndropped events: 0\nread events: 0",
+    "cpu2": "entries: 611\noverrun: 0\ncommit overrun: 0\nbytes: 34908\noldest event ts: 12789.106834\nnow ts: 12805.128945\ndropped events: 0\nread events: 0",
+    "cpu1": "entries: 393\noverrun: 0\ncommit overrun: 0\nbytes: 22204\noldest event ts: 12789.101697\nnow ts: 12805.129587\ndropped events: 0\nread events: 0",
+    "cpu0": "entries: 620\noverrun: 0\ncommit overrun: 0\nbytes: 34360\noldest event ts: 12789.040914\nnow ts: 12805.130170\ndropped events: 0\nread events: 0"
+  },
+  "brightness": "10",
+  "pid": 27352
+}

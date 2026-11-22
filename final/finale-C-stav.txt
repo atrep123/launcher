@@ -1,0 +1,5 @@
+8778e96195d776f02cfd4928bf55aee1651d9366d172831f8e9ea5a4cad35ded  /usr/share/APPLaunch/bin/M5CardputerZero-APPLaunch
+e4e7972155601a65689d86a9bc9cce247a6c0ca204a97e6daee84440f38fe7e7  /usr/share/APPLaunch/bin/M5CardputerZero-APPLaunch.orig
+d6bc26f4-1727-40e4-904b-d99cd6049cc4
+ondemand
+Discharging
