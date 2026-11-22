@@ -69,7 +69,7 @@ void append_builtin_app(std::list<app> &apps, const BuiltinAppRegistration &regi
                           registration.help_factory);
     }
     apps.back().id = registration.desc.config_key;
-    apps.back().folder = app_folder_for_categories(registration.categories);
+    apps.back().folder = app_folder_for_app(registration.categories, registration.desc.label);
 }
 
 constexpr BuiltinAppRegistration BUILTIN_APPS[] = {

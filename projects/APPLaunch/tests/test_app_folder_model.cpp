@@ -9,6 +9,7 @@
 #include "model/launcher_navigation_model.hpp"
 
 #include <cassert>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -28,7 +29,7 @@ AppFolder folder_from_desktop(const std::string &fields)
 {
     const auto entry = parse_desktop_entry("[Desktop Entry]\nName=Sample\nExec=sample\n" + fields);
     assert(entry);
-    return app_folder_for_categories(entry->categories);
+    return app_folder_for_app(entry->categories, entry->name);
 }
 
 void test_desktop_categories()
@@ -114,8 +115,55 @@ void test_folder_navigation()
 
 } // namespace
 
+static void test_fallback_assignments()
+{
+    for (const auto *name : {"Cap-CC1101", "Cap-LoRa", "Cap-GPS", "Cap-NFC", "Cap-SubG",
+                             "IR-Chat", "IR-Remote", "IR Remote", "RF sonda", "GPS"}) {
+        assert(app_folder_for_app("", name) == AppFolder::Radio);
+    }
+    assert(app_folder_for_app("", "Third-party product title", "cap-subg.desktop") == AppFolder::Radio);
+    for (const auto *name : {"Music", "Rec", "Recorder", "Piano", "Camera"})
+        assert(app_folder_for_app("", name) == AppFolder::Media);
+    for (const auto *name : {"Files", "ZClaw", "Keyboard Guide", "Compass"})
+        assert(app_folder_for_app("  ", name) == AppFolder::Tools);
+    assert(app_folder_for_app("Utility;", "Camera") == AppFolder::Media);
+    assert(app_folder_for_app("Network;HamRadio;", "RF sonda") == AppFolder::Radio);
+    assert(app_folder_for_app("Game;", "Piano") == AppFolder::Games);
+    assert(app_folder_for_app("", "Unknown app") == AppFolder::Other);
+}
+
+static void test_user_assignments()
+{
+    std::istringstream input(
+        "\xef\xbb\xbf# folders.conf\r\n"
+        "  \n"
+        " RF sonda = Media \r\n"
+        "app_Setting = Tools\n"
+        "RF sonda = Games\n"
+        "unparseable\n"
+        " = System\n"
+        "Music = NoSuchFolder\n"
+        "Compass = Radio = Tools\n"
+        "app_rfsonda = System\n");
+    std::vector<std::size_t> malformed;
+    const auto overrides = parse_app_folder_overrides(input, [&malformed](auto line) {
+        malformed.push_back(line);
+    });
+    assert((malformed == std::vector<std::size_t>{6, 7, 8, 9}));
+    assert(apply_app_folder_override(overrides, "app_rfsonda", "RF sonda", AppFolder::Radio)
+           == AppFolder::System);
+    assert(apply_app_folder_override(overrides, "another_id", "RF sonda", AppFolder::Radio)
+           == AppFolder::Games);
+    assert(apply_app_folder_override(overrides, "app_Setting", "Settings", AppFolder::System)
+           == AppFolder::Tools);
+    assert(apply_app_folder_override(overrides, "music", "Music", AppFolder::Media)
+           == AppFolder::Media);
+}
+
 int main()
 {
+    test_fallback_assignments();
+    test_user_assignments();
     test_desktop_categories();
     test_flat_carousel();
     test_folder_navigation();

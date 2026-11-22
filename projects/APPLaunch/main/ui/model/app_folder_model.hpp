@@ -11,9 +11,12 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <iosfwd>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 enum class AppFolder : std::uint8_t {
@@ -28,7 +31,16 @@ struct AppFolderDefinition {
 };
 
 const AppFolderDefinition &app_folder_definition(AppFolder folder);
-AppFolder app_folder_for_categories(std::string_view categories);
+AppFolder app_folder_for_app(std::string_view categories, std::string_view name,
+                            std::string_view desktop_file = {});
+
+using AppFolderOverrides = std::unordered_map<std::string, AppFolder>;
+AppFolderOverrides parse_app_folder_overrides(std::istream &input,
+                                              const std::function<void(std::size_t)> &log_invalid);
+AppFolderOverrides load_app_folder_overrides();
+AppFolder apply_app_folder_override(const AppFolderOverrides &overrides,
+                                   const std::string &id, const std::string &name,
+                                   AppFolder default_folder);
 
 class AppFolderModel {
 public:

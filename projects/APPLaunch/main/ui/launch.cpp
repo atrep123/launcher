@@ -238,16 +238,18 @@ void Launch::applications_load()
     launcher_append_desktop_apps(apps);
     launcher_sort_app_display_order(apps);
 
+    const bool folders_enabled = launcher_app_folders_enabled();
+    const auto overrides = folders_enabled ? load_app_folder_overrides() : AppFolderOverrides{};
     std::vector<const app *> ordered_apps;
     std::vector<AppFolderModel::App> entries;
     ordered_apps.reserve(apps.size());
     entries.reserve(apps.size());
     for (const app &item : apps) {
         ordered_apps.push_back(&item);
-        entries.push_back({item.id, item.folder});
+        entries.push_back({item.id, apply_app_folder_override(overrides, item.id, item.Name, item.folder)});
     }
 
-    carousel_.rebuild(std::move(entries), launcher_app_folders_enabled(), builtin_count);
+    carousel_.rebuild(std::move(entries), folders_enabled, builtin_count);
     app_list.swap(apps);
     ordered_apps_.swap(ordered_apps);
 }
