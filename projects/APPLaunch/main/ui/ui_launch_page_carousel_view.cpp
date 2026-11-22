@@ -195,7 +195,8 @@ void UILaunchPage::set_carousel_element_clickable(size_t element, bool clickable
         lv_obj_clear_flag(carousel_elements_[element], LV_OBJ_FLAG_CLICKABLE);
 }
 
-void UILaunchPage::set_panel_icon(lv_obj_t *panel, const std::string &src)
+void UILaunchPage::set_panel_icon(lv_obj_t *panel, const std::string &src,
+                                   const lv_image_dsc_t *folder_icon)
 {
     if (!panel)
         return;
@@ -203,7 +204,7 @@ void UILaunchPage::set_panel_icon(lv_obj_t *panel, const std::string &src)
     lv_obj_set_style_pad_all(panel, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_t *clip = lv_obj_get_child(panel, 0);
     lv_obj_t *image = clip ? lv_obj_get_child(clip, 0) : nullptr;
-    if (src.empty()) {
+    if (src.empty() && !folder_icon) {
         if (image && lv_obj_check_type(image, &lv_image_class))
             lv_image_set_src(image, nullptr);
         return;
@@ -241,27 +242,27 @@ void UILaunchPage::set_panel_icon(lv_obj_t *panel, const std::string &src)
     const lv_coord_t source_card_size = lv_obj_get_width(panel) >= 100 ? 100 : 80;
     const uint32_t image_size = static_cast<uint32_t>(std::max<lv_coord_t>(
         1, source_card_size - 2 * card_border));
-    lv_image_set_src(image, home_icon_pool_.find(src, image_size));
+    lv_image_set_src(image, folder_icon ? folder_icon : home_icon_pool_.find(src, image_size));
     compensate_image_scale(image);
 }
 
-void UILaunchPage::update_carousel_slot(size_t slot, const char *title, const std::string &icon)
-{
-    update_carousel_item(panel(slot), label(slot), title, icon);
-}
-
 void UILaunchPage::update_carousel_item(lv_obj_t *panel, lv_obj_t *label,
-                                        const char *title, const std::string &icon)
+                                        const std::optional<HomeCarouselItem> &item)
 {
     if (label) {
-        const char *next = title ? title : "";
+        const char *next = item ? item->title.c_str() : "";
         const char *current = lv_label_get_text(label);
         // DOT mode rewrites the widget text with "...". Only restart the
         // selected bounce when the source name itself changed.
         if (!current || std::strcmp(current, next) != 0)
             lv_label_set_text(label, next);
     }
-    set_panel_icon(panel, icon);
+    if (!item) {
+        set_panel_icon(panel, {});
+        return;
+    }
+    const auto *folder_icon = item->folder ? home_icon_pool_.find_folder(*item->folder) : nullptr;
+    set_panel_icon(panel, item->icon, folder_icon);
 }
 
 void UILaunchPage::create_screen()

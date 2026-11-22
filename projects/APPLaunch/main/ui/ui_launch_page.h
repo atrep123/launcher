@@ -7,6 +7,7 @@
 #pragma once
 
 #include "home_icon_buffer_pool.hpp"
+#include "launch.h"
 #include "launcher_ui_app_page.hpp"
 #include "model/launcher_navigation_model.hpp"
 #include "model/launcher_startup_contract.hpp"
@@ -15,8 +16,6 @@
 #include <memory>
 #include <string>
 #include <vector>
-
-class Launch;
 
 class UILaunchPage : public home_base
 {
@@ -50,10 +49,8 @@ public:
     lv_obj_t *label(size_t slot);
 
     void refresh_carousel();
-    void reload_home_icons(const std::vector<std::string> &icon_paths);
-    void update_carousel_slot(size_t slot, const char *title, const std::string &icon);
-    void update_carousel_item(lv_obj_t *panel, lv_obj_t *label, const char *title,
-                              const std::string &icon);
+    void reload_home_icons(const std::vector<std::string> &icon_paths,
+                           const std::array<bool, kAppFolderCount> &visible_folders);
     void launch_selected_app();
 
 protected:
@@ -102,7 +99,10 @@ private:
     void set_page_slider_range(size_t page_count, size_t selected_page);
     void set_page_slider_position(size_t page);
     void set_carousel_element_clickable(size_t element, bool clickable);
-    void set_panel_icon(lv_obj_t *panel, const std::string &src);
+    void update_carousel_item(lv_obj_t *panel, lv_obj_t *label,
+                              const std::optional<HomeCarouselItem> &item);
+    void set_panel_icon(lv_obj_t *panel, const std::string &src,
+                        const lv_image_dsc_t *folder_icon = nullptr);
     static void on_left_arrow_clicked(lv_event_t *event) noexcept;
     static void on_right_arrow_clicked(lv_event_t *event) noexcept;
     static void on_app_clicked(lv_event_t *event) noexcept;

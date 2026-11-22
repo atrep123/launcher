@@ -244,6 +244,8 @@ void launcher_append_desktop_apps(std::list<app> &apps)
 
             apps.emplace_back(candidate.entry.name, candidate.icon_path, candidate.entry.exec,
                               candidate.entry.terminal, candidate.entry.sysplause);
+            apps.back().id = config_key;
+            apps.back().folder = app_folder_for_categories(candidate.entry.categories);
             ++appended;
         }
         launcher_app_registry_commit_dynamic_refresh();

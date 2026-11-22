@@ -24,6 +24,9 @@ struct AppDescriptor {
     LauncherAppOrigin origin = LauncherAppOrigin::Builtin;
 };
 
+bool launcher_app_folders_enabled();
+bool launcher_set_app_folders_enabled(bool enabled);
+
 const AppDescriptor *launcher_app_registry_entries(std::size_t *count);
 bool launcher_app_registry_is_enabled(const AppDescriptor &desc);
 bool launcher_app_registry_set_enabled(const AppDescriptor &desc, bool enabled);

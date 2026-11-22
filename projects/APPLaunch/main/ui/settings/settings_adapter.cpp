@@ -322,6 +322,20 @@ bool populate_launcher_children(Tree &tree, const NodeIter &parent)
 {
 #ifdef LAUNCHER_BUILD
     tree.erase_children(parent);
+    SettingEntry folders{"Folders", [](int command, void *data) {
+        if (command == SettingApiReadFlag && data) {
+            *static_cast<bool *>(data) = launcher_app_folders_enabled();
+        } else if (command == SettingApiReadFlagTimeStart && data) {
+            auto &result = *static_cast<SettingApiReadFlagTimeStartData *>(data);
+            std::get<0>(result) = launcher_app_folders_enabled();
+        } else if (command == SettingApiActivate) {
+            if (launcher_set_app_folders_enabled(!launcher_app_folders_enabled()))
+                launcher_app_registry_notify_changed();
+        }
+    }, true};
+    folders.status_read_policy = SettingStatusReadPolicy::Direct;
+    tree.append_child(parent, std::move(folders));
+
     std::size_t count = 0;
     const AppDescriptor *entries = launcher_app_registry_entries(&count);
     if (count > 0 && !entries) return false;

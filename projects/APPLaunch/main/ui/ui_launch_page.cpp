@@ -289,8 +289,7 @@ void UILaunchPage::fill_right_entering_slot(lv_obj_t *panel, lv_obj_t *label)
         return;
 
     launch_->select_next_app();
-    if (const app *item = launch_->carousel_slot_app(kCardFarRight))
-        update_carousel_item(panel, label, item->Name.c_str(), item->Icon);
+    update_carousel_item(panel, label, launch_->carousel_slot_item(kCardFarRight));
 }
 
 void UILaunchPage::fill_left_entering_slot(lv_obj_t *panel, lv_obj_t *label)
@@ -299,8 +298,7 @@ void UILaunchPage::fill_left_entering_slot(lv_obj_t *panel, lv_obj_t *label)
         return;
 
     launch_->select_previous_app();
-    if (const app *item = launch_->carousel_slot_app(kCardFarLeft))
-        update_carousel_item(panel, label, item->Name.c_str(), item->Icon);
+    update_carousel_item(panel, label, launch_->carousel_slot_item(kCardFarLeft));
 }
 
 void UILaunchPage::refresh_carousel()
@@ -308,27 +306,32 @@ void UILaunchPage::refresh_carousel()
     if (!launch_)
         return;
 
-    set_page_slider_position(launch_->current_app_index());
-
-    for (size_t slot = 0; slot < launcher_carousel_layout::kPanelCount; ++slot) {
-        if (const app *item = launch_->carousel_slot_app(slot))
-            update_carousel_slot(slot, item->Name.c_str(), item->Icon);
-        else
-            update_carousel_slot(slot, "", {});
+    if (navigation_.is_animating()) {
+        auto alive = std::make_shared<bool>(true);
+        *carousel_alive_ = false;
+        carousel_alive_ = std::move(alive);
+        finish_switch_animation();
     }
+    set_page_slider_range(launch_->app_count(), launch_->current_app_index());
+    const bool can_switch = launch_->can_switch_carousel_item();
+    if (left_arrow_button_) lv_obj_set_flag(left_arrow_button_, LV_OBJ_FLAG_HIDDEN, !can_switch);
+    if (right_arrow_button_) lv_obj_set_flag(right_arrow_button_, LV_OBJ_FLAG_HIDDEN, !can_switch);
+
+    for (size_t slot = 0; slot < launcher_carousel_layout::kPanelCount; ++slot)
+        update_carousel_item(panel(slot), label(slot), launch_->carousel_slot_item(slot));
     launcher_home_animation::apply_title_overflow(label(kCardCenter), true);
 }
 
-void UILaunchPage::reload_home_icons(const std::vector<std::string> &icon_paths)
+void UILaunchPage::reload_home_icons(const std::vector<std::string> &icon_paths,
+                                     const std::array<bool, kAppFolderCount> &visible_folders)
 {
     HomeIconBufferPool replacement;
-    replacement.rebuild(icon_paths);
+    replacement.rebuild(icon_paths, visible_folders);
     home_icon_pool_.swap(replacement);
 
     // Keep the old pool alive until every image widget no longer references it.
     for (size_t slot = 0; slot < launcher_carousel_layout::kPanelCount; ++slot)
         set_panel_icon(panel(slot), {});
-    set_page_slider_range(icon_paths.size(), launch_ ? launch_->current_app_index() : 0);
     refresh_carousel();
 }
 
@@ -386,6 +389,7 @@ void UILaunchPage::cancel_switch_animation()
 
 void UILaunchPage::switch_right()
 {
+    if (launch_ && !launch_->can_switch_carousel_item()) return;
     if (std::any_of(carousel_elements_.begin(), carousel_elements_.begin() +
                     launcher_carousel_layout::kElementCount,
                     [](lv_obj_t *element) { return element == nullptr; })) return;
@@ -427,6 +431,7 @@ void UILaunchPage::switch_right()
 
 void UILaunchPage::switch_left()
 {
+    if (launch_ && !launch_->can_switch_carousel_item()) return;
     if (std::any_of(carousel_elements_.begin(), carousel_elements_.begin() +
                     launcher_carousel_layout::kElementCount,
                     [](lv_obj_t *element) { return element == nullptr; })) return;

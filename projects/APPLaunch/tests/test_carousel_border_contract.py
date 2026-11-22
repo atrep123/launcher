@@ -58,14 +58,14 @@ def test_icon_pool_rebuilds_with_the_app_list():
     bind_start = LAUNCH.index("void Launch::bind_ui()")
     bind_end = LAUNCH.index("void Launch::launch_app()", bind_start)
     reload_start = LAUNCH.index("void Launch::applications_reload()")
-    reload_end = LAUNCH.index("int Launch::normalized_app_index", reload_start)
+    reload_end = LAUNCH.index("void Launch::esc_force_home_cb", reload_start)
     assert "reload_home_icons();" in LAUNCH[bind_start:bind_end]
     assert "reload_home_icons();" in LAUNCH[reload_start:reload_end]
 
 
 def test_icons_are_clipped_by_their_card_content_geometry():
     start = SOURCE.index("void UILaunchPage::set_panel_icon")
-    end = SOURCE.index("void UILaunchPage::update_carousel_slot", start)
+    end = SOURCE.index("void UILaunchPage::update_carousel_item", start)
     setter = SOURCE[start:end]
     assert "lv_obj_t *clip" in setter
     assert "lv_obj_create(panel)" in setter
@@ -110,12 +110,15 @@ def test_carousel_refresh_clears_slots_when_the_app_list_is_empty():
     refresh_start = LAUNCH_PAGE.index("void UILaunchPage::refresh_carousel()")
     refresh_end = LAUNCH_PAGE.index("void UILaunchPage::reload_home_icons", refresh_start)
     refresh = LAUNCH_PAGE[refresh_start:refresh_end]
-    assert 'update_carousel_slot(slot, "", {});' in refresh
+    assert "launch_->carousel_slot_item(slot)" in refresh
+    update = SOURCE[SOURCE.index("void UILaunchPage::update_carousel_item"):]
+    assert 'item ? item->title.c_str() : ""' in update
+    assert "if (!item)" in update and "set_panel_icon(panel, {});" in update
 
     setter_start = SOURCE.index("void UILaunchPage::set_panel_icon")
-    setter_end = SOURCE.index("void UILaunchPage::update_carousel_slot", setter_start)
+    setter_end = SOURCE.index("void UILaunchPage::update_carousel_item", setter_start)
     setter = SOURCE[setter_start:setter_end]
-    assert "if (src.empty())" in setter
+    assert "if (src.empty() && !folder_icon)" in setter
     assert "lv_image_set_src(image, nullptr);" in setter
 
 

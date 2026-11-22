@@ -17,6 +17,7 @@
 namespace {
 
 AppRegistryCallbackSlot g_changed_callback;
+constexpr char kAppFoldersSetting[] = "app_folders";
 
 int config_get_int(const char *key, int default_val)
 {
@@ -50,6 +51,22 @@ bool config_save()
 }
 
 } // namespace
+
+bool launcher_app_folders_enabled()
+{
+    return config_get_int(kAppFoldersSetting, 0) != 0;
+}
+
+bool launcher_set_app_folders_enabled(bool enabled)
+{
+    const bool previous = launcher_app_folders_enabled();
+    if (previous == enabled) return true;
+    if (!config_set_int(kAppFoldersSetting, enabled ? 1 : 0)) return false;
+    if (config_save()) return true;
+    config_set_int(kAppFoldersSetting, previous ? 1 : 0);
+    config_save();
+    return false;
+}
 
 bool launcher_app_registry_is_enabled(const AppDescriptor &desc)
 {

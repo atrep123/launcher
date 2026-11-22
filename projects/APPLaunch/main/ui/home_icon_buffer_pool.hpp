@@ -7,6 +7,7 @@
 #pragma once
 
 #include "lvgl/lvgl.h"
+#include "model/app_folder_model.hpp"
 
 #include <cstddef>
 #include <memory>
@@ -23,7 +24,9 @@ public:
     HomeIconBufferPool(const HomeIconBufferPool &) = delete;
     HomeIconBufferPool &operator=(const HomeIconBufferPool &) = delete;
 
-    void rebuild(const std::vector<std::string> &icon_paths);
+    void rebuild(const std::vector<std::string> &icon_paths,
+                 const std::array<bool, kAppFolderCount> &visible_folders);
+    const lv_image_dsc_t *find_folder(AppFolder folder) const;
     const lv_image_dsc_t *find(const std::string &path) const;
     const lv_image_dsc_t *find(const std::string &path, uint32_t size);
     std::size_t size() const { return icons_.size(); }
@@ -40,6 +43,7 @@ private:
     static DrawBufferPtr decode_and_prepare(const std::string &path, uint32_t size);
     static const lv_image_dsc_t *as_image(const DrawBufferPtr &buffer);
 
+    std::array<DrawBufferPtr, kAppFolderCount> folder_icons_;
     std::unordered_map<std::string, DrawBufferPtr> icons_;
     std::unordered_map<std::string, DrawBufferPtr> resized_icons_;
 };

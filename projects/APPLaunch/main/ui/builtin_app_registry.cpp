@@ -32,6 +32,7 @@ struct BuiltinAppRegistration {
     bool sysplause;
     bool run_as_root;
     BuiltinAppAppender append;
+    const char *categories;
     TerminalHelpFactory help_factory = nullptr;
 };
 
@@ -58,38 +59,40 @@ void append_builtin_app(std::list<app> &apps, const BuiltinAppRegistration &regi
 {
     if (registration.append) {
         registration.append(apps, registration.desc);
-        return;
+    } else {
+        apps.emplace_back(registration.desc.label,
+                          launcher_platform::path(registration.desc.icon),
+                          resolved_exec(registration),
+                          registration.terminal,
+                          registration.sysplause,
+                          registration.run_as_root,
+                          registration.help_factory);
     }
-    apps.emplace_back(registration.desc.label,
-                      launcher_platform::path(registration.desc.icon),
-                      resolved_exec(registration),
-                      registration.terminal,
-                      registration.sysplause,
-                      registration.run_as_root,
-                      registration.help_factory);
+    apps.back().id = registration.desc.config_key;
+    apps.back().folder = app_folder_for_categories(registration.categories);
 }
 
 constexpr BuiltinAppRegistration BUILTIN_APPS[] = {
     {{"Settings", "setting_100.png", "app_Setting", false, true},
-     nullptr, false, true, false, append_page_app<UISettingTreePage>},
+     nullptr, false, true, false, append_page_app<UISettingTreePage>, "Settings;"},
     {{"Store", "store_100.png", "app_Store", false, true},
-     "@appstore_exec", false, true, false, nullptr},
+     "@appstore_exec", false, true, false, nullptr, "PackageManager;"},
     {{"CLI", "cli_100.png", "app_CLI", false, true},
-     nullptr, false, true, false, append_cli_app},
+     nullptr, false, true, false, append_cli_app, "System;"},
     {{"Python", "python_100.png", "app_Python", true, false},
-     "python3", true, false, false, nullptr, create_python_help},
+     "python3", true, false, false, nullptr, "Development;", create_python_help},
 #if defined(__linux__) && !defined(HAL_PLATFORM_SDL)
     {{"SSH", "ssh_100.png", "app_SSH", true, false},
-     nullptr, false, true, false, append_page_app<UISSHPage>},
+     nullptr, false, true, false, append_page_app<UISSHPage>, "System;"},
     {{"IP Panel", "ip_panel_100.png", "app_IP_Panel", true, false},
-     nullptr, false, true, false, append_page_app<UIIpPanelPage>},
+     nullptr, false, true, false, append_page_app<UIIpPanelPage>, "Monitor;"},
 #endif
     {{"Calculator", "math_100.png", "app_Math", true, false},
-     "@calculator_exec", false, true, false, nullptr},
+     "@calculator_exec", false, true, false, nullptr, "Utility;"},
     {{"Snake", "game_100.png", "app_Game", true, false},
-     nullptr, false, true, false, append_page_app<UIGamePage>},
+     nullptr, false, true, false, append_page_app<UIGamePage>, "Game;"},
     {{"Tank", "tank_100.png", "app_Tank", true, false},
-     nullptr, false, true, false, append_page_app<UITankBattlePage>},
+     nullptr, false, true, false, append_page_app<UITankBattlePage>, "Game;"},
 };
 
 DynamicAppRegistry &dynamic_app_registry()

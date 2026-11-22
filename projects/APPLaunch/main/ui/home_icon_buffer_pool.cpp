@@ -70,6 +70,30 @@ lv_color32_t sample_bilinear(const lv_draw_buf_t &source, uint32_t output_x,
     return result;
 }
 
+// Generate the folder asset in memory so the binary needs no additional
+// installed resources. The silhouette and palette are shared by all sizes.
+void draw_folder_icon(lv_draw_buf_t &buffer, std::uint32_t color)
+{
+    const auto background = lv_color32_make(27, 31, 38, 255);
+    const auto back = lv_color32_make((color >> 16) * 3 / 4,
+                                     ((color >> 8) & 255) * 3 / 4,
+                                     (color & 255) * 3 / 4, 255);
+    const auto front = lv_color32_make(color >> 16, (color >> 8) & 255, color & 255, 255);
+    for (uint32_t y = 0; y < buffer.header.h; ++y) {
+        auto *row = static_cast<lv_color32_t *>(lv_draw_buf_goto_xy(&buffer, 0, y));
+        std::fill_n(row, buffer.header.w, background);
+        if (y >= 26 && y < 73) {
+            const uint32_t right = y < 34 ? 44 : 80;
+            const uint32_t inset = y < 29 ? 29 - y : 0;
+            std::fill(row + 18 + inset, row + right - inset, back);
+        }
+        if (y >= 42 && y < 77) {
+            const uint32_t inset = std::max(0, static_cast<int>(y) - 72);
+            std::fill(row + 16 + inset, row + 84 - inset, front);
+        }
+    }
+}
+
 } // namespace
 
 void HomeIconBufferPool::DrawBufferDeleter::operator()(lv_draw_buf_t *buffer) const noexcept
@@ -77,8 +101,15 @@ void HomeIconBufferPool::DrawBufferDeleter::operator()(lv_draw_buf_t *buffer) co
     if (buffer) lv_draw_buf_destroy(buffer);
 }
 
-void HomeIconBufferPool::rebuild(const std::vector<std::string> &icon_paths)
+void HomeIconBufferPool::rebuild(const std::vector<std::string> &icon_paths,
+                                 const std::array<bool, kAppFolderCount> &visible_folders)
 {
+    for (std::size_t i = 0; i < visible_folders.size(); ++i) {
+        auto &icon = folder_icons_[i];
+        icon.reset(visible_folders[i] ? lv_draw_buf_create(kIconSize, kIconSize,
+                   LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO) : nullptr);
+        if (icon) draw_folder_icon(*icon, app_folder_definition(static_cast<AppFolder>(i)).color);
+    }
     icons_.clear();
     resized_icons_.clear();
     icons_.reserve(icon_paths.size());
@@ -93,6 +124,12 @@ void HomeIconBufferPool::rebuild(const std::vector<std::string> &icon_paths)
         icons_.emplace(path, std::move(icon));
     }
     SLOGI("[HOME] preloaded %zu/%zu unique icons", icons_.size(), icon_paths.size());
+}
+
+const lv_image_dsc_t *HomeIconBufferPool::find_folder(AppFolder folder) const
+{
+    const auto &icon = folder_icons_[CP0_ENUM_CAST_SIZE_T(folder)];
+    return icon ? as_image(icon) : &home_icon_fallback;
 }
 
 const lv_image_dsc_t *HomeIconBufferPool::find(const std::string &path) const
@@ -125,6 +162,7 @@ const lv_image_dsc_t *HomeIconBufferPool::find(const std::string &path, uint32_t
 
 void HomeIconBufferPool::swap(HomeIconBufferPool &other) noexcept
 {
+    folder_icons_.swap(other.folder_icons_);
     icons_.swap(other.icons_);
     resized_icons_.swap(other.resized_icons_);
 }

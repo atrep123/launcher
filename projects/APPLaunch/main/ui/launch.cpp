@@ -15,6 +15,7 @@
 #include "ui_launch_page.h"
 #include "ui_screensaver.h"
 #include "ui_loading.h"
+#include "cp0_enum_cast.h"
 #include "cp0_lvgl_app.h"
 #include "sample_log.h"
 
@@ -42,7 +43,6 @@ void Launch::bind_ui()
     bound_ = true;
 
     launcher_app_registry_set_changed_callback(app_registry_changed_cb, this);
-    rebuild_builtin_apps();
     applications_load();
     reload_home_icons();
 
@@ -53,8 +53,13 @@ void Launch::bind_ui()
 
 void Launch::launch_app()
 {
-    const app *selected = app_at_index(current_app);
-    if (!selected) return;
+    const auto item = carousel_.item();
+    if (!item) return;
+    if (item->folder) {
+        if (carousel_.open_folder()) refresh_home_carousel();
+        return;
+    }
+    const app *selected = ordered_apps_[item->app_index];
 
     try {
         selected->launch(this);
@@ -183,84 +188,98 @@ void Launch::launch_Exec(const std::string &exec, bool keep_root)
 
 void Launch::select_next_app()
 {
-    int next = normalized_app_index(current_app + 1);
-    if (next >= 0) current_app = next;
+    carousel_.move(1);
 }
 
 void Launch::select_previous_app()
 {
-    int previous = normalized_app_index(current_app - 1);
-    if (previous >= 0) current_app = previous;
+    carousel_.move(-1);
 }
 
 std::size_t Launch::app_count() const
 {
-    return app_list.size();
+    return carousel_.size();
 }
 
 std::size_t Launch::current_app_index() const
 {
-    const int normalized = normalized_app_index(current_app);
-    return normalized < 0 ? 0 : static_cast<std::size_t>(normalized);
+    return carousel_.index();
 }
 
-const app *Launch::carousel_slot_app(size_t slot) const
+std::optional<HomeCarouselItem> Launch::carousel_slot_item(size_t slot) const
 {
-    if (slot >= kHomeCarouselSlotCount)
-        return nullptr;
-    return app_at_index(current_app + static_cast<int>(slot) - kHomeCarouselCenterSlot);
+    if (slot >= kHomeCarouselSlotCount) return std::nullopt;
+    const auto item = carousel_.item(static_cast<int>(slot) - kHomeCarouselCenterSlot);
+    if (!item) return std::nullopt;
+    if (item->folder) {
+        static const std::string no_icon_path;
+        return HomeCarouselItem{
+            folder_titles_[CP0_ENUM_CAST_SIZE_T(*item->folder)], no_icon_path, item->folder};
+    }
+    const auto &app = *ordered_apps_[item->app_index];
+    return HomeCarouselItem{app.Name, app.Icon, std::nullopt};
+}
+
+bool Launch::can_switch_carousel_item() const
+{
+    return !carousel_.enabled() || carousel_.size() > 1;
+}
+
+void Launch::close_folder()
+{
+    if (carousel_.close_folder()) refresh_home_carousel();
 }
 
 void Launch::applications_load()
 {
-    launcher_append_desktop_apps(app_list);
-    launcher_sort_app_display_order(app_list);
+    std::list<app> apps;
+    launcher_append_enabled_builtin_apps(apps);
+    const auto builtin_count = apps.size();
+    launcher_append_desktop_apps(apps);
+    launcher_sort_app_display_order(apps);
+
+    std::vector<const app *> ordered_apps;
+    std::vector<AppFolderModel::App> entries;
+    ordered_apps.reserve(apps.size());
+    entries.reserve(apps.size());
+    for (const app &item : apps) {
+        ordered_apps.push_back(&item);
+        entries.push_back({item.id, item.folder});
+    }
+
+    carousel_.rebuild(std::move(entries), launcher_app_folders_enabled(), builtin_count);
+    app_list.swap(apps);
+    ordered_apps_.swap(ordered_apps);
 }
 
 void Launch::refresh_home_carousel()
 {
-    int normalized = normalized_app_index(current_app);
-    if (normalized < 0) return;
-    current_app = normalized;
     if (auto page = launch_page_.lock()) page->refresh_carousel();
 }
 
 void Launch::reload_home_icons()
 {
-    const int normalized = normalized_app_index(current_app);
-    if (normalized >= 0) current_app = normalized;
-
     std::vector<std::string> icon_paths;
     icon_paths.reserve(app_list.size());
     for (const app &item : app_list)
         icon_paths.push_back(item.Icon);
-    if (auto page = launch_page_.lock()) page->reload_home_icons(icon_paths);
+
+    std::array<bool, kAppFolderCount> visible_folders{};
+    for (std::size_t i = 0; i < visible_folders.size(); ++i) {
+        const auto folder = static_cast<AppFolder>(i);
+        const auto count = carousel_.folder_size(folder);
+        if (count == 0) continue;
+        visible_folders[i] = true;
+        folder_titles_[i] = std::string(app_folder_definition(folder).label) +
+            " (" + std::to_string(count) + ')';
+    }
+    if (auto page = launch_page_.lock()) page->reload_home_icons(icon_paths, visible_folders);
 }
 
 void Launch::applications_reload()
 {
-    rebuild_builtin_apps();
     applications_load();
     reload_home_icons();
-}
-
-int Launch::normalized_app_index(int index) const
-{
-    int size = static_cast<int>(app_list.size());
-    if (size == 0)
-        return -1;
-
-    index %= size;
-    return index < 0 ? index + size : index;
-}
-
-const app *Launch::app_at_index(int index) const
-{
-    int normalized = normalized_app_index(index);
-    if (normalized < 0)
-        return nullptr;
-
-    return &*std::next(app_list.begin(), normalized);
 }
 
 void Launch::esc_force_home_cb(void *user_data) noexcept
@@ -291,16 +310,6 @@ Launch::Launch() = default;
 void Launch::set_launch_page(std::shared_ptr<UILaunchPage> launch_page)
 {
     launch_page_ = std::move(launch_page);
-}
-
-void Launch::rebuild_builtin_apps()
-{
-    app_list.clear();
-
-    launcher_append_enabled_builtin_apps(app_list);
-
-    fixed_count = app_list.size();
-    current_app = normalized_app_index(current_app);
 }
 
 void Launch::app_registry_changed_cb(void *user_data) noexcept

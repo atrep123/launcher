@@ -62,6 +62,15 @@ ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
 "$build_dir/test_desktop_entry"
 ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
     -I"$test_root/../main/ui" \
+    -I"$test_root/../../../ext_components/cp0_lvgl/include" \
+    "$test_root/test_app_folder_model.cpp" \
+    "$test_root/../main/ui/desktop_entry.cpp" \
+    "$test_root/../main/ui/model/app_folder_model.cpp" \
+    "$test_root/../main/ui/model/launcher_navigation_model.cpp" \
+    -o "$build_dir/test_app_folder_model"
+"$build_dir/test_app_folder_model"
+${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
+    -I"$test_root/../main/ui" \
     "$test_root/test_preinstalled_app_manifest.cpp" \
     "$test_root/../main/ui/model/preinstalled_app_manifest.cpp" \
     "$test_root/../main/ui/desktop_entry.cpp" \

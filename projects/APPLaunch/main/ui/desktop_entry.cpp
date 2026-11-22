@@ -78,6 +78,7 @@ std::optional<DesktopEntry> parse_desktop_entry(std::string_view contents)
         if (key == "Name") entry.name = std::move(value);
         else if (key == "Icon") entry.icon = std::move(value);
         else if (key == "Exec") entry.exec = std::move(value);
+        else if (key == "Categories") entry.categories = std::move(value);
         else if (key == "Terminal") entry.terminal = parse_bool(value);
         else if (key == "Sysplause") entry.sysplause = parse_bool(value);
         else if (key == "Hidden" || key == "NoDisplay") hidden = hidden || parse_bool(value);

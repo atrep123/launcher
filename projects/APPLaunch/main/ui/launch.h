@@ -11,13 +11,16 @@
 #include "app_directory_watcher.h"
 #include "ui_loading.h"
 #include "esc_ui_watchdog.h"
+#include "model/app_folder_model.hpp"
 #include "model/launcher_navigation_model.hpp"
 #include "terminal_help_factory.hpp"
 
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <list>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -41,6 +44,8 @@ struct app
     std::string Icon;
     std::string Exec;
     std::function<void(Launch *)> launch;
+    std::string id;
+    AppFolder folder = AppFolder::Other;
 
     app(std::string name, std::string icon, std::string exec, bool terminal);
     app(std::string name, std::string icon, std::string exec, bool terminal, bool sysplause);
@@ -55,6 +60,12 @@ struct app
         TerminalHelpFactory help_factory);
 };
 
+struct HomeCarouselItem {
+    const std::string &title;
+    const std::string &icon;
+    std::optional<AppFolder> folder;
+};
+
 class Launch
 {
 public:
@@ -67,7 +78,9 @@ public:
     void select_previous_app();
     std::size_t app_count() const;
     std::size_t current_app_index() const;
-    const app *carousel_slot_app(size_t slot) const;
+    std::optional<HomeCarouselItem> carousel_slot_item(size_t slot) const;
+    bool can_switch_carousel_item() const;
+    void close_folder();
     void launch_app();
 
 private:
@@ -83,20 +96,18 @@ private:
     void refresh_home_carousel();
     void reload_home_icons();
     void applications_reload();
-    void rebuild_builtin_apps();
-    int normalized_app_index(int index) const;
-    const app *app_at_index(int index) const;
 
     static void lv_go_back_home(void *arg) noexcept;
     static void esc_force_home_cb(void *user_data) noexcept;
     static void app_registry_changed_cb(void *user_data) noexcept;
 
     std::weak_ptr<UILaunchPage> launch_page_;
-    int current_app = 2;
+    AppFolderModel carousel_;
+    std::vector<const app *> ordered_apps_;
+    std::array<std::string, kAppFolderCount> folder_titles_;
     AppDirectoryWatcher app_directory_watcher_;
     EscUiWatchdog esc_ui_watchdog_;
     LauncherPageLifecycleModel page_lifecycle_;
-    int fixed_count = 0;
     bool bound_ = false;
     std::list<app> app_list;
     std::shared_ptr<void> app_Page;

@@ -83,6 +83,13 @@ void UILaunchPage::handle_home_key(lv_event_t *event)
            kbd_state_name(elm->key_state),
            elm->sym_name);
 
+    // The release can arrive here after Esc closed an in-process app page.
+    // Only a fresh press on the carousel should leave a folder.
+    if (code == KEY_ESC && elm->key_state == KBD_KEY_PRESSED && launch_) {
+        launch_->close_folder();
+        return;
+    }
+
     if (elm->key_state)
     {
         switch (code)

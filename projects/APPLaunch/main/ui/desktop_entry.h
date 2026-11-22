@@ -16,6 +16,7 @@ struct DesktopEntry
     std::string exec;
     bool terminal = false;
     bool sysplause = true;
+    std::string categories{};
 };
 
 inline constexpr std::size_t DESKTOP_ENTRY_MAX_NAME_BYTES = 128;
