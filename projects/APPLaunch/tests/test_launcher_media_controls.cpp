@@ -84,8 +84,10 @@ int main()
            std::function<void(int, std::string)> callback) {
             assert(!arguments.empty());
             const std::string command = arguments.front();
-            std::unique_lock<std::mutex> lock(read_mutex);
-            audio_commands.push_back(command);
+            {
+                std::lock_guard<std::mutex> lock(read_mutex);
+                audio_commands.push_back(command);
+            }
 
             if (command == "MuteRead") {
                 reply(callback, 0, sink_muted ? "1" : "0");
@@ -94,6 +96,7 @@ int main()
                 ++mute_toggles;
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "VolumeRead") {
+                std::unique_lock<std::mutex> lock(read_mutex);
                 if (check_refresh_thread) assert(std::this_thread::get_id() != refresh_caller);
                 if (block_read) {
                     read_pending = true;
