@@ -323,10 +323,10 @@ void UILaunchPage::refresh_carousel()
 }
 
 void UILaunchPage::reload_home_icons(const std::vector<std::string> &icon_paths,
-                                     const std::array<bool, kAppFolderCount> &visible_folders)
+                                     const std::array<std::size_t, kAppFolderCount> &folder_sizes)
 {
     HomeIconBufferPool replacement;
-    replacement.rebuild(icon_paths, visible_folders);
+    replacement.rebuild(icon_paths, folder_sizes);
     home_icon_pool_.swap(replacement);
 
     // Keep the old pool alive until every image widget no longer references it.

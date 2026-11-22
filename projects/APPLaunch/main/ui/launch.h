@@ -15,7 +15,6 @@
 #include "model/launcher_navigation_model.hpp"
 #include "terminal_help_factory.hpp"
 
-#include <array>
 #include <cstddef>
 #include <functional>
 #include <list>
@@ -61,7 +60,7 @@ struct app
 };
 
 struct HomeCarouselItem {
-    const std::string &title;
+    const char *title;
     const std::string &icon;
     std::optional<AppFolder> folder;
 };
@@ -104,7 +103,6 @@ private:
     std::weak_ptr<UILaunchPage> launch_page_;
     AppFolderModel carousel_;
     std::vector<const app *> ordered_apps_;
-    std::array<std::string, kAppFolderCount> folder_titles_;
     AppDirectoryWatcher app_directory_watcher_;
     EscUiWatchdog esc_ui_watchdog_;
     LauncherPageLifecycleModel page_lifecycle_;

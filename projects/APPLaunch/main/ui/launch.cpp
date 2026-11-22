@@ -15,10 +15,10 @@
 #include "ui_launch_page.h"
 #include "ui_screensaver.h"
 #include "ui_loading.h"
-#include "cp0_enum_cast.h"
 #include "cp0_lvgl_app.h"
 #include "sample_log.h"
 
+#include <array>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -214,10 +214,10 @@ std::optional<HomeCarouselItem> Launch::carousel_slot_item(size_t slot) const
     if (item->folder) {
         static const std::string no_icon_path;
         return HomeCarouselItem{
-            folder_titles_[CP0_ENUM_CAST_SIZE_T(*item->folder)], no_icon_path, item->folder};
+            app_folder_definition(*item->folder).label, no_icon_path, item->folder};
     }
     const auto &app = *ordered_apps_[item->app_index];
-    return HomeCarouselItem{app.Name, app.Icon, std::nullopt};
+    return HomeCarouselItem{app.Name.c_str(), app.Icon, std::nullopt};
 }
 
 bool Launch::can_switch_carousel_item() const
@@ -264,16 +264,10 @@ void Launch::reload_home_icons()
     for (const app &item : app_list)
         icon_paths.push_back(item.Icon);
 
-    std::array<bool, kAppFolderCount> visible_folders{};
-    for (std::size_t i = 0; i < visible_folders.size(); ++i) {
-        const auto folder = static_cast<AppFolder>(i);
-        const auto count = carousel_.folder_size(folder);
-        if (count == 0) continue;
-        visible_folders[i] = true;
-        folder_titles_[i] = std::string(app_folder_definition(folder).label) +
-            " (" + std::to_string(count) + ')';
-    }
-    if (auto page = launch_page_.lock()) page->reload_home_icons(icon_paths, visible_folders);
+    std::array<std::size_t, kAppFolderCount> folder_sizes{};
+    for (std::size_t i = 0; i < folder_sizes.size(); ++i)
+        folder_sizes[i] = carousel_.folder_size(static_cast<AppFolder>(i));
+    if (auto page = launch_page_.lock()) page->reload_home_icons(icon_paths, folder_sizes);
 }
 
 void Launch::applications_reload()

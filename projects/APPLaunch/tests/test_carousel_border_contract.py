@@ -112,7 +112,7 @@ def test_carousel_refresh_clears_slots_when_the_app_list_is_empty():
     refresh = LAUNCH_PAGE[refresh_start:refresh_end]
     assert "launch_->carousel_slot_item(slot)" in refresh
     update = SOURCE[SOURCE.index("void UILaunchPage::update_carousel_item"):]
-    assert 'item ? item->title.c_str() : ""' in update
+    assert 'item ? item->title : ""' in update
     assert "if (!item)" in update and "set_panel_icon(panel, {});" in update
 
     setter_start = SOURCE.index("void UILaunchPage::set_panel_icon")

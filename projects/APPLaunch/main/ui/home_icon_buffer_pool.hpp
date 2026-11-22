@@ -25,7 +25,7 @@ public:
     HomeIconBufferPool &operator=(const HomeIconBufferPool &) = delete;
 
     void rebuild(const std::vector<std::string> &icon_paths,
-                 const std::array<bool, kAppFolderCount> &visible_folders);
+                 const std::array<std::size_t, kAppFolderCount> &folder_sizes);
     const lv_image_dsc_t *find_folder(AppFolder folder) const;
     const lv_image_dsc_t *find(const std::string &path) const;
     const lv_image_dsc_t *find(const std::string &path, uint32_t size);

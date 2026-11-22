@@ -250,7 +250,7 @@ void UILaunchPage::update_carousel_item(lv_obj_t *panel, lv_obj_t *label,
                                         const std::optional<HomeCarouselItem> &item)
 {
     if (label) {
-        const char *next = item ? item->title.c_str() : "";
+        const char *next = item ? item->title : "";
         const char *current = lv_label_get_text(label);
         // DOT mode rewrites the widget text with "...". Only restart the
         // selected bounce when the source name itself changed.

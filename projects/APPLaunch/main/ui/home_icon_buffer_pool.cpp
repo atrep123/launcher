@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <utility>
 
@@ -94,6 +95,24 @@ void draw_folder_icon(lv_draw_buf_t &buffer, std::uint32_t color)
     }
 }
 
+void draw_folder_count(lv_obj_t *canvas, lv_draw_buf_t &buffer, std::size_t count)
+{
+    lv_canvas_set_draw_buf(canvas, &buffer);
+    lv_layer_t layer;
+    lv_canvas_init_layer(canvas, &layer);
+    char text[24];
+    std::snprintf(text, sizeof(text), "%zu", count);
+    lv_draw_label_dsc_t label;
+    lv_draw_label_dsc_init(&label);
+    label.color = lv_color_hex(0x12171e);
+    label.font = &lv_font_montserrat_22;
+    label.align = LV_TEXT_ALIGN_CENTER;
+    label.text = text;
+    const lv_area_t area{16, 47, 83, 72};
+    lv_draw_label(&layer, &label, &area);
+    lv_canvas_finish_layer(canvas, &layer);
+}
+
 } // namespace
 
 void HomeIconBufferPool::DrawBufferDeleter::operator()(lv_draw_buf_t *buffer) const noexcept
@@ -102,14 +121,23 @@ void HomeIconBufferPool::DrawBufferDeleter::operator()(lv_draw_buf_t *buffer) co
 }
 
 void HomeIconBufferPool::rebuild(const std::vector<std::string> &icon_paths,
-                                 const std::array<bool, kAppFolderCount> &visible_folders)
+                                 const std::array<std::size_t, kAppFolderCount> &folder_sizes)
 {
-    for (std::size_t i = 0; i < visible_folders.size(); ++i) {
+    std::unique_ptr<lv_obj_t, decltype(&lv_obj_delete)> canvas(nullptr, lv_obj_delete);
+    for (std::size_t i = 0; i < folder_sizes.size(); ++i) {
         auto &icon = folder_icons_[i];
-        icon.reset(visible_folders[i] ? lv_draw_buf_create(kIconSize, kIconSize,
-                   LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO) : nullptr);
-        if (icon) draw_folder_icon(*icon, app_folder_definition(static_cast<AppFolder>(i)).color);
+        icon.reset();
+        if (folder_sizes[i] == 0) continue;
+        icon.reset(lv_draw_buf_create(kIconSize, kIconSize, LV_COLOR_FORMAT_ARGB8888, LV_STRIDE_AUTO));
+        if (!icon) continue;
+        draw_folder_icon(*icon, app_folder_definition(static_cast<AppFolder>(i)).color);
+        if (!canvas) {
+            if (auto *parent = lv_screen_active()) canvas.reset(lv_canvas_create(parent));
+            if (canvas) lv_obj_add_flag(canvas.get(), LV_OBJ_FLAG_HIDDEN);
+        }
+        if (canvas) draw_folder_count(canvas.get(), *icon, folder_sizes[i]);
     }
+    canvas.reset();
     icons_.clear();
     resized_icons_.clear();
     icons_.reserve(icon_paths.size());

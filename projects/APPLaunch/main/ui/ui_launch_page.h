@@ -50,7 +50,7 @@ public:
 
     void refresh_carousel();
     void reload_home_icons(const std::vector<std::string> &icon_paths,
-                           const std::array<bool, kAppFolderCount> &visible_folders);
+                           const std::array<std::size_t, kAppFolderCount> &folder_sizes);
     void launch_selected_app();
 
 protected:
