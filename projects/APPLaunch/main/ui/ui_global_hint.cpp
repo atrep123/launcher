@@ -39,14 +39,10 @@
 #include "esc_hold_hint_controller.h"
 #include "model/setup_value_policy.hpp"
 #include "model/global_hint_policy.hpp"
+#include "model/volume_shortcut_worker.hpp"
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdlib>
-#include <deque>
-#include <mutex>
-#include <optional>
-#include <thread>
 
 #include "input_keys.h"
 
@@ -79,7 +75,7 @@ std::atomic<bool> g_external_esc_hint_visible{false};
 class VolumeShortcuts
 {
 public:
-    ~VolumeShortcuts() { stop_worker(); }
+    void start() { worker_.start(); }
 
     void enqueue(int delta)
     {
@@ -89,73 +85,25 @@ public:
             }, 16, this);
             if (!timer_) return;
         }
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            if (!worker_.joinable()) {
-                stopping_ = false;
-                worker_ = std::thread([this] { run(); });
-            }
-            pending_.push_back(delta);
-        }
-        wake_.notify_one();
+        worker_.enqueue(delta);
         lv_timer_resume(timer_);
     }
 
     void shutdown()
     {
+        worker_.stop();
         if (timer_) {
             lv_timer_delete(timer_);
             timer_ = nullptr;
         }
-        stop_worker();
     }
 
 private:
-    void stop_worker()
-    {
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            stopping_ = true;
-            pending_.clear();
-            result_.reset();
-        }
-        wake_.notify_one();
-        if (worker_.joinable()) worker_.join();
-    }
-
-    void run()
-    {
-        std::unique_lock<std::mutex> lock(mutex_);
-        while (true) {
-            wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
-            if (stopping_) return;
-
-            const int delta = pending_.front();
-            pending_.pop_front();
-            busy_ = true;
-            lock.unlock();
-            std::optional<cp0::audio::VolumeStepResult> result;
-            try {
-                // A negative percent carries a mute-only result to the OSD.
-                result = delta == 0
-                    ? cp0::audio::VolumeStepResult{-1, launcher_media_controls::toggle_mute()}
-                    : launcher_media_controls::adjust_volume(delta);
-            } catch (...) {
-            }
-            lock.lock();
-            if (result && !stopping_) result_ = result;
-            busy_ = false;
-        }
-    }
-
     void show_result()
     {
-        std::optional<cp0::audio::VolumeStepResult> result;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            result = std::exchange(result_, std::nullopt);
-            if (!busy_ && pending_.empty()) lv_timer_pause(timer_);
-        }
+        bool idle;
+        const auto result = worker_.take_result(idle);
+        if (idle) lv_timer_pause(timer_);
         if (!result) return;
         if (result->percent < 0) {
             launcher_media_osd().show_mute(result->muted);
@@ -167,14 +115,12 @@ private:
         }
     }
 
-    std::mutex mutex_;
-    std::condition_variable wake_;
-    std::deque<int> pending_;
-    // A burst only needs its latest completed result painted.
-    std::optional<cp0::audio::VolumeStepResult> result_;
-    bool busy_ = false;
-    bool stopping_ = false;
-    std::thread worker_;
+    VolumeShortcutWorker worker_{[](int delta) {
+        // A negative percent carries a mute-only result to the OSD.
+        return delta == 0
+            ? cp0::audio::VolumeStepResult{-1, launcher_media_controls::toggle_mute()}
+            : launcher_media_controls::adjust_volume(delta);
+    }};
     lv_timer_t *timer_ = nullptr;
 };
 
@@ -189,6 +135,11 @@ bool external_esc_hint_visible() noexcept
 void reset_external_esc_hint() noexcept
 {
     g_external_esc_hint_visible.store(false, std::memory_order_release);
+}
+
+void start()
+{
+    g_volume_shortcuts.start();
 }
 
 void shutdown()

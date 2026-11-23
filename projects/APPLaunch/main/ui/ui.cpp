@@ -41,6 +41,7 @@ void init()
     /* Cache the system volume once here so the shortcut OSD and
      * Settings -> Speaker share one value for the whole launcher session. */
     launcher_media_controls::start_volume_cache();
+    ui_global_hint::start();
     cp0_keyboard_set_global_key_handler(ui_global_hint::on_key);
     home = std::make_unique<LauncherUiRuntime>();
     home->start();
@@ -50,8 +51,8 @@ void init()
 void deinit()
 {
     cp0_keyboard_set_global_key_handler(nullptr);
-    launcher_media_controls::stop_volume_cache();
     ui_global_hint::shutdown();
+    launcher_media_controls::stop_volume_cache();
     launcher_battery_ui::shutdown_warning();
     ui_loading::shutdown();
     ui_screensaver_deinit();
