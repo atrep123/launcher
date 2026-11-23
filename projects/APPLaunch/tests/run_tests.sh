@@ -240,17 +240,7 @@ ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
     -o "$build_dir/test_launcher_media_model"
 "$build_dir/test_launcher_media_model"
 
-${CXX:-g++} -std=c++17 -Wall -Wextra -Werror -pthread \
-    -I"$(dirname "$0")/../../../ext_components/cp0_lvgl/include" \
-    -I"$(dirname "$0")/../../../SDK/github_source/eventpp/include" \
-    "$(dirname "$0")/../../../ext_components/cp0_lvgl/src/commount.cpp" \
-    "$(dirname "$0")/../../../ext_components/cp0_lvgl/src/cp0_network_api_contract.cpp" \
-    "$(dirname "$0")/test_launcher_media_controls.cpp" \
-    "$(dirname "$0")/../main/ui/launcher_media_controls.cpp" \
-    "$(dirname "$0")/../main/ui/model/launcher_media_model.cpp" \
-    "$(dirname "$0")/../main/ui/model/setup_value_policy.cpp" \
-    -o "$build_dir/test_launcher_media_controls"
-"$build_dir/test_launcher_media_controls"
+sh "$test_root/run-volume-tests.sh"
 
 ${CXX:-g++} -std=c++17 -Wall -Wextra -Werror \
     -I"$(dirname "$0")/../../../ext_components/cp0_lvgl/include" \

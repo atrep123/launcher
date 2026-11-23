@@ -323,7 +323,7 @@ jobs:
     - name: Install test dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libxkbcommon-dev
+        sudo apt-get install -y libxkbcommon-dev libpulse-dev pulseaudio pulseaudio-utils
 
     - name: Pre-download eventpp headers (pinned to the revision scons resolves)
       run: |
@@ -349,6 +349,9 @@ jobs:
 
     - name: Run cp0_lvgl unit tests
       run: sh ext_components/cp0_lvgl/tests/run_tests.sh
+
+    - name: Run APPLaunch volume unit tests
+      run: sh projects/APPLaunch/tests/run-volume-tests.sh
 
     - name: Run APPLaunch packaging tests
       # Guards the release workflow contract (publish gate, tag/version rules,

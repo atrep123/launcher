@@ -496,3 +496,7 @@ TSAN_OPTIONS="halt_on_error=1" "$binary"
 "${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \
     -I"$root/include" "$root/tests/test_keyboard_input_context.cpp" -o "$binary"
 "$binary"
+
+if [ "$(uname -s)" = "Linux" ]; then
+    sh "$root/tests/run-pulse-volume-step.sh"
+fi
