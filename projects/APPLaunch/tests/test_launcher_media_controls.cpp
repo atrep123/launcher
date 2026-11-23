@@ -6,25 +6,23 @@
 
 #include "../main/ui/launcher_media_controls.h"
 
+#include "commount.h"
 #include "hal_lvgl_bsp.h"
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
+#include <cstdio>
 #include <functional>
+#include <future>
 #include <iterator>
 #include <list>
 #include <string>
 #include <thread>
 #include <vector>
 
-eventpp::CallbackList<void(std::list<std::string>, std::function<void(int, std::string)>)>
-    cp0_signal_audio_api;
-eventpp::CallbackList<void(std::list<std::string>, std::function<void(int, std::string)>)>
-    cp0_signal_config_api;
-eventpp::CallbackList<void(std::list<std::string>, std::function<void(int, std::string)>)>
-    cp0_signal_settings_api;
+extern "C" int cp0_backlight_write(int) { return -1; }
 
 namespace {
 
@@ -70,11 +68,89 @@ void reply(const std::function<void(int, std::string)> &callback,
         callback(code, data);
 }
 
+void test_startup_restore_during_shortcut()
+{
+    using namespace std::chrono_literals;
+
+    int level = 60;
+    int saved = 60;
+    bool muted = true;
+    std::promise<void> restore_waiting, step_written, restore_written, release_restore;
+    auto restore_ready = restore_waiting.get_future();
+    auto step_ready = step_written.get_future();
+    auto restored = restore_written.get_future().share();
+    auto release = release_restore.get_future();
+
+    const auto audio = cp0_signal_audio_api.append([&](auto args, auto callback) {
+        const auto &command = args.front();
+        if (command == "DefaultSink") {
+            reply(callback, 0, "alsa_output.platform-sound.stereo-fallback");
+        } else if (command == "VolumeRead") {
+            // The restore pass has observed a transient level and decided to
+            // rewrite the saved value. Hold the write before it reaches the mixer.
+            reply(callback, 0, "50");
+        } else if (command == "VolumeWrite") {
+            restore_waiting.set_value();
+            assert(release.wait_for(5s) == std::future_status::ready);
+            level = std::stoi(args.back());
+            restore_written.set_value();
+        } else if (command == "VolumeStepRead") {
+            reply(callback, 0, "1 " + std::to_string(level) + (muted ? " 1" : " 0"));
+        } else if (command == "VolumeStepVolume") {
+            level = std::stoi(args.back());
+            step_written.set_value();
+            // On the unfixed launcher this forces the stale write to land
+            // between the shortcut's volume write and unmute.
+            assert(restored.wait_for(5s) == std::future_status::ready);
+            reply(callback, 0, args.back());
+        } else if (command == "VolumeStepMute") {
+            muted = args.back() == "1";
+            reply(callback, 0, args.back());
+        } else {
+            assert(false);
+        }
+    });
+    const auto config = cp0_signal_config_api.append([&](auto args, auto callback) {
+        if (args.front() == "Save") {
+            reply(callback, 0, "");
+            return;
+        }
+        const auto &key = *std::next(args.begin());
+        if (args.front() == "GetInt") {
+            reply(callback, 0, key == "volume" ? std::to_string(saved) : "-1");
+        } else {
+            assert(args.front() == "SetManyAndSave" || args.front() == "SetInt");
+            saved = std::stoi(args.back());
+            reply(callback, 0, "");
+        }
+    });
+
+    init_lvgl_saved_settings();
+    assert(restore_ready.wait_for(5s) == std::future_status::ready);
+    std::promise<void> shortcut_started;
+    auto started = shortcut_started.get_future();
+    auto shortcut = std::async(std::launch::async, [&] {
+        shortcut_started.set_value();
+        return launcher_media_controls::adjust_volume(-10);
+    });
+    assert(started.wait_for(5s) == std::future_status::ready);
+    const bool overlapped = step_ready.wait_for(250ms) == std::future_status::ready;
+    release_restore.set_value();
+    const int shown = shortcut.get();
+    cp0_saved_volume_restore_stop();
+    cp0_signal_audio_api.remove(audio);
+    cp0_signal_config_api.remove(config);
+
+    std::fprintf(stderr, "startup restore: overlap=%d level=%d muted=%d saved=%d OSD=%d\n",
+                 overlapped, level, muted, saved, shown);
+    assert(!overlapped && level == 50 && !muted && saved == 50 && shown == 50);
+}
+
 } // namespace
 
 int main()
 {
-    cp0_signal_audio_api.append(
+    const auto audio = cp0_signal_audio_api.append(
         [](std::list<std::string> arguments,
            std::function<void(int, std::string)> callback) {
             assert(!arguments.empty());
@@ -123,12 +199,23 @@ int main()
             }
         });
 
-    cp0_signal_config_api.append(
+    const auto config = cp0_signal_config_api.append(
         [](std::list<std::string> arguments,
            std::function<void(int, std::string)> callback) {
             assert(!arguments.empty());
             const std::string command = arguments.front();
-            if (command == "GetInt") {
+            if (command == "SetManyAndSave") {
+                ++config_writes;
+                assert(arguments.size() == 3 && *std::next(arguments.begin()) == "volume");
+                if (replace_mixer_on_save) {
+                    replace_mixer_on_save = false;
+                    ++mixer_id;
+                    sink_muted = false;
+                    sink_volume = 50;
+                }
+                if (!config_save_failed) configured_volume = std::stoi(arguments.back());
+                reply(callback, config_save_failed ? -1 : 0, "");
+            } else if (command == "GetInt") {
                 const std::string key = *std::next(arguments.begin());
                 if (key == "brightness" && brightness_config_missing) {
                     reply(callback, 0, *std::next(arguments.begin(), 2));
@@ -147,12 +234,6 @@ int main()
                     configured_volume = value;
                 reply(callback, 0, "");
             } else if (command == "Save") {
-                if (replace_mixer_on_save) {
-                    replace_mixer_on_save = false;
-                    ++mixer_id;
-                    sink_muted = false;
-                    sink_volume = 50;
-                }
                 reply(callback, config_save_failed ? -1 : 0, "");
             } else {
                 assert(false);
@@ -350,5 +431,7 @@ int main()
     backlight_write_failed = false;
     assert(config_writes == previous_config_writes);
 
-    return 0;
+    cp0_signal_audio_api.remove(audio);
+    cp0_signal_config_api.remove(config);
+    test_startup_restore_during_shortcut();
 }

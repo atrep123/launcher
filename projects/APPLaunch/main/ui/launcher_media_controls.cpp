@@ -6,6 +6,7 @@
 
 #include "launcher_media_controls.h"
 
+#include "commount.h"
 #include "cp0_audio_volume_step.hpp"
 
 #include "hal_lvgl_bsp.h"
@@ -181,9 +182,9 @@ bool write_config_int(const char *key, int value, int fallback)
     return false;
 }
 
-bool persist_volume(int previous, int written)
+bool persist_volume(int, int written)
 {
-    return write_config_int("volume", written, previous);
+    return call_config({"SetManyAndSave", "volume", std::to_string(written)});
 }
 
 #if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
@@ -226,11 +227,15 @@ cp0::audio::VolumeStepResult step_signal_mixer(const std::function<int(int)> &ta
         if (live.id != previous.id) return {};
         return live.state;
     };
+    const auto restore = [&](cp0::audio::VolumeStepResult live, int written) {
+        return live.percent == written && written != previous.state.percent &&
+               write("VolumeStepVolume", previous.state.percent);
+    };
     return cp0::audio::apply_volume_step(previous.state, target(previous.state.percent),
                                          persist_volume,
                                          [&](int value) { return write("VolumeStepVolume", value); },
                                          [&](bool muted) { return write("VolumeStepMute", muted); },
-                                         observe);
+                                         observe, restore);
 }
 #endif
 
@@ -332,6 +337,9 @@ void update_cached_volume(int percent)
 
 int adjust_volume(int delta_percent)
 {
+    // Startup may have captured the old saved level. Drain its last pass and
+    // cancel retries before observing or changing the live mixer.
+    cp0_saved_volume_restore_stop();
     const int delta = delta_percent > 0 ? VOLUME_STEP_PERCENT
                                        : delta_percent < 0 ? -VOLUME_STEP_PERCENT : 0;
     const auto target = [delta](int current) { return setup_values::round_volume_percent(current) + delta; };
@@ -370,6 +378,7 @@ int adjust_brightness(int delta_percent)
 
 bool toggle_mute()
 {
+    cp0_saved_volume_restore_stop();
     const bool previous = model.muted();
     bool muted = previous;
     cp0_signal_audio_api({"MuteToggle"}, [&](int code, std::string data) {

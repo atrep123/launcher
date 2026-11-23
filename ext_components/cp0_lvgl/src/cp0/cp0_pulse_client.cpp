@@ -56,6 +56,20 @@ struct PaCVolume {
     pa_volume_t values[kPaChannelsMax];
 };
 
+bool same_volume(const PaCVolume &left, const PaCVolume &right)
+{
+    return left.channels == right.channels &&
+           std::equal(left.values, left.values + left.channels, right.values);
+}
+
+PaCVolume channel_volume(std::uint8_t channels, int percent)
+{
+    PaCVolume volume{};
+    volume.channels = channels;
+    std::fill_n(volume.values, channels, volume_scale_from_percent(percent));
+    return volume;
+}
+
 struct PaSinkInfo {
     const char *name;
     std::uint32_t index;
@@ -202,8 +216,7 @@ struct SinkState {
     bool done = false;
     bool ok = false;
     std::uint32_t index = 0;
-    std::uint8_t channels = 0;
-    std::uint32_t volume = 0;
+    PaCVolume volume{};
     int mute = 0;
 };
 
@@ -232,12 +245,10 @@ void sink_info_cb(pa_context *, const PaSinkInfo *info, int eol, void *userdata)
         return;
     }
     if (info) {
-        const auto channels = std::min<std::size_t>(info->volume.channels, kPaChannelsMax);
         state->index = info->index;
-        state->channels = static_cast<std::uint8_t>(channels);
-        state->volume = info->volume.values[0];
+        state->volume = info->volume;
         state->mute = info->mute;
-        state->ok = state->channels > 0;
+        state->ok = state->volume.channels > 0 && state->volume.channels <= kPaChannelsMax;
     }
     if (eol > 0) state->done = true;
 }
@@ -303,7 +314,6 @@ public:
         SinkState state;
         if (!run(api_->get_sink_info_by_name(context_, name.c_str(), &sink_info_cb, &state), state)) return false;
         sink_index_ = state.index;
-        sink_channels_ = state.channels;
         sink_volume_ = state.volume;
         sink_mute_ = state.mute;
         return true;
@@ -311,9 +321,9 @@ public:
 
     bool set_volume(const std::string &name, int percent)
     {
-        if (sink_channels_ == 0) return false;
+        if (sink_volume_.channels == 0) return false;
 
-        const PaCVolume volume = channel_volume(percent);
+        const PaCVolume volume = channel_volume(sink_volume_.channels, percent);
         SuccessState state;
         return run(api_->set_sink_volume_by_name(context_, name.c_str(), &volume, &success_cb, &state), state);
     }
@@ -324,12 +334,11 @@ public:
         return run(api_->set_sink_mute_by_name(context_, name.c_str(), muted ? 1 : 0, &success_cb, &state), state);
     }
 
-    bool set_step_volume(int percent)
+    bool set_step_volume(const PaCVolume &volume)
     {
         if (!api_->set_sink_volume_by_index) return false;
         renew_deadline();
 
-        const PaCVolume volume = channel_volume(percent);
         SuccessState state;
         return run(api_->set_sink_volume_by_index(context_, sink_index_, &volume, &success_cb, &state), state);
     }
@@ -350,7 +359,8 @@ public:
 
     std::uint32_t sink_index() const { return sink_index_; }
     VolumeStepResult step_state() const { return {std::clamp(volume_percent(), 0, 100), muted()}; }
-    int volume_percent() const { return percent_from_volume_scale(sink_volume_); }
+    const PaCVolume &sink_volume() const { return sink_volume_; }
+    int volume_percent() const { return percent_from_volume_scale(sink_volume_.values[0]); }
     bool muted() const { return sink_mute_ != 0; }
 
 private:
@@ -359,14 +369,6 @@ private:
         if (!run(api_->get_server_info(context_, &server_info_cb, &state), state)) return false;
         server_cookie_ = state.cookie;
         return true;
-    }
-
-    PaCVolume channel_volume(int percent) const
-    {
-        PaCVolume volume{};
-        volume.channels = sink_channels_;
-        std::fill_n(volume.values, sink_channels_, volume_scale_from_percent(percent));
-        return volume;
     }
 
     bool pump()
@@ -418,8 +420,7 @@ private:
     std::chrono::steady_clock::time_point deadline_{};
     std::uint32_t server_cookie_ = 0;
     std::uint32_t sink_index_ = 0;
-    std::uint8_t sink_channels_ = 0;
-    std::uint32_t sink_volume_ = 0;
+    PaCVolume sink_volume_{};
     int sink_mute_ = 0;
 };
 
@@ -484,6 +485,11 @@ VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
     const auto cookie = session->server_cookie();
     const auto index = session->sink_index();
     const auto previous = session->step_state();
+    const PaCVolume original = session->sink_volume();
+    const auto read_same_sink = [&] {
+        session->renew_deadline();
+        return session->sink(name) && session->sink_index() == index;
+    };
     bool recovering = false;
     const auto observe = [&]() -> VolumeStepResult {
         if (!recovering) {
@@ -492,14 +498,22 @@ VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
             session.emplace();
             if (!session->open() || !session->matches_server(cookie)) return {};
         }
-        session->renew_deadline();
-        if (!session->sink(name) || session->sink_index() != index) return {};
-        return session->step_state();
+        return read_same_sink() ? session->step_state() : VolumeStepResult{};
     };
-    return audio::apply_volume_step(previous, target(previous.percent), persist,
-                                    [&](int percent) { return session->set_step_volume(percent); },
+    const auto write = [&](int percent) {
+        const PaCVolume wanted = channel_volume(original.channels, percent);
+        // A PulseAudio volume acknowledgement can also mean a passthrough no-op.
+        return session->set_step_volume(wanted) && read_same_sink() &&
+               same_volume(session->sink_volume(), wanted) && session->muted() == previous.muted;
+    };
+    const auto restore = [&](VolumeStepResult, int percent) {
+        const PaCVolume wanted = channel_volume(original.channels, percent);
+        return !same_volume(original, wanted) && same_volume(session->sink_volume(), wanted) &&
+               session->set_step_volume(original);
+    };
+    return audio::apply_volume_step(previous, target(previous.percent), persist, write,
                                     [&](bool muted) { return session->set_step_mute(muted); },
-                                    observe);
+                                    observe, restore);
 }
 
 int read_default_sink_mute()

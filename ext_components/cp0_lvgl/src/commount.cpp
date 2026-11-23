@@ -11,7 +11,6 @@
 #include "cp0_integer_codec.hpp"
 #include "cp0_sync_signal.hpp"
 #include "cp0/cp0_audio_mixer_control.hpp"
-#include "lvgl/lvgl.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -158,6 +157,7 @@ namespace {
 
 struct SavedVolumeRestore
 {
+    std::mutex lifecycle_mutex;
     std::mutex mutex;
     std::condition_variable wake;
     bool stop = false;
@@ -170,7 +170,7 @@ struct SavedVolumeRestore
     ~SavedVolumeRestore()
     {
         try {
-            join();
+            stop_and_join();
         } catch (...) {
         }
     }
@@ -191,8 +191,15 @@ struct SavedVolumeRestore
             worker.join();
     }
 
+    void stop_and_join()
+    {
+        std::lock_guard<std::mutex> lock(lifecycle_mutex);
+        join();
+    }
+
     void start(int volume)
     {
+        std::lock_guard<std::mutex> lifecycle_lock(lifecycle_mutex);
         join();
         {
             std::lock_guard<std::mutex> lock(mutex);
@@ -271,7 +278,7 @@ static void saved_volume_restore(int val)
 extern "C" void cp0_saved_volume_restore_stop(void) noexcept
 {
     try {
-        g_saved_volume_restore.join();
+        g_saved_volume_restore.stop_and_join();
     } catch (...) {
     }
 }

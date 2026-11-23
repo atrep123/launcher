@@ -18,10 +18,11 @@ struct VolumeStepResult {
 
 // A backend must acknowledge exact writes and only observe or write the original
 // output during recovery. An unavailable or mismatched observation returns -1.
-template <typename WriteVolume, typename SetMute, typename Observe>
+template <typename WriteVolume, typename SetMute, typename Observe, typename RestoreVolume>
 VolumeStepResult apply_volume_step(VolumeStepResult previous, int target,
                                    const std::function<bool(int, int)> &persist,
-                                   WriteVolume write_volume, SetMute set_mute, Observe observe)
+                                   WriteVolume write_volume, SetMute set_mute, Observe observe,
+                                   RestoreVolume restore_volume)
 {
     const int written = std::clamp(target, 0, 100);
     auto confirmed = previous;
@@ -45,9 +46,8 @@ VolumeStepResult apply_volume_step(VolumeStepResult previous, int target,
     }
     // If the unmute timed out and the sink is still muted on reread, it may
     // still unmute later. Keep the safe target instead of restoring the old level.
-    if (live.percent == written && written != previous.percent &&
-        (!previous.muted || (live.muted && (!unmute_uncertain || unmute_seen)))) {
-        if (write_volume(previous.percent)) live.percent = previous.percent;
+    if (!previous.muted || (live.muted && (!unmute_uncertain || unmute_seen))) {
+        if (restore_volume(live, written)) live.percent = previous.percent;
     }
     const auto settled = observe();
     return settled.percent < 0 ? live : settled;
@@ -60,8 +60,9 @@ namespace cp0::pulse {
 using audio::VolumeStepResult;
 
 // Writes the step to the sink it read. Calls persist(previous, written) after
-// an acknowledged write and reconnects to recover on failure. Returns the
-// last confirmed state of that sink, or percent -1 if the initial read failed.
+// verifying the written volume on the original connection, and reconnects to
+// recover on failure. Returns the last confirmed state of that sink, or percent
+// -1 if the initial read failed.
 VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
                                           const std::function<bool(int, int)> &persist);
 
