@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -74,6 +75,8 @@ struct PaServerInfo {
     const char *server_name;
     PaSampleSpec sample_spec;
     const char *default_sink_name;
+    const char *default_source_name;
+    std::uint32_t cookie;
     // The remaining fields of the real pa_server_info are not accessed.
 };
 
@@ -84,6 +87,8 @@ static_assert(sizeof(PaCVolume) == 4 + kPaChannelsMax * sizeof(pa_volume_t), "un
 static_assert(offsetof(PaSinkInfo, volume) == 172, "unexpected pa_sink_info layout");
 static_assert(offsetof(PaSinkInfo, mute) == 304, "unexpected pa_sink_info layout");
 static_assert(offsetof(PaServerInfo, default_sink_name) == 48, "unexpected pa_server_info layout");
+
+static_assert(offsetof(PaServerInfo, cookie) == 64, "unexpected pa_server_info cookie layout");
 
 using SinkInfoCallback = void (*)(pa_context *, const PaSinkInfo *, int, void *);
 using ServerInfoCallback = void (*)(pa_context *, const PaServerInfo *, void *);
@@ -190,6 +195,7 @@ struct NameState {
     bool done = false;
     bool ok = false;
     std::string name;
+    std::uint32_t cookie = 0;
 };
 
 struct SinkState {
@@ -209,8 +215,9 @@ struct SuccessState {
 void server_info_cb(pa_context *, const PaServerInfo *info, void *userdata)
 {
     auto *state = static_cast<NameState *>(userdata);
-    if (info && info->default_sink_name && info->default_sink_name[0]) {
-        state->name = info->default_sink_name;
+    if (info) {
+        if (info->default_sink_name) state->name = info->default_sink_name;
+        state->cookie = info->cookie;
         state->ok = true;
     }
     state->done = true;
@@ -278,9 +285,17 @@ public:
     bool default_sink(std::string &name)
     {
         NameState state;
-        if (!run(api_->get_server_info(context_, &server_info_cb, &state), state)) return false;
+        if (!server_info(state) || state.name.empty()) return false;
         name = std::move(state.name);
         return true;
+    }
+
+    std::uint32_t server_cookie() const { return server_cookie_; }
+
+    bool matches_server(std::uint32_t cookie)
+    {
+        NameState state;
+        return cookie != 0 && server_info(state) && state.cookie == cookie;
     }
 
     bool sink(const std::string &name)
@@ -339,6 +354,13 @@ public:
     bool muted() const { return sink_mute_ != 0; }
 
 private:
+    bool server_info(NameState &state)
+    {
+        if (!run(api_->get_server_info(context_, &server_info_cb, &state), state)) return false;
+        server_cookie_ = state.cookie;
+        return true;
+    }
+
     PaCVolume channel_volume(int percent) const
     {
         PaCVolume volume{};
@@ -394,6 +416,7 @@ private:
     pa_mainloop *mainloop_ = nullptr;
     pa_context *context_ = nullptr;
     std::chrono::steady_clock::time_point deadline_{};
+    std::uint32_t server_cookie_ = 0;
     std::uint32_t sink_index_ = 0;
     std::uint8_t sink_channels_ = 0;
     std::uint32_t sink_volume_ = 0;
@@ -454,41 +477,29 @@ int write_default_sink_volume(int percent)
 VolumeStepResult step_default_sink_volume(const std::function<int(int)> &target,
                                           const std::function<bool(int, int)> &persist)
 {
+    std::optional<Session> session(std::in_place);
     std::string name;
-    std::uint32_t index;
-    VolumeStepResult previous;
-    VolumeStepResult observed;
-    bool step_written = false;
-    {
-        Session session;
-        if (!session.open() || !session.default_sink(name) || !session.sink(name)) return {};
+    if (!session->open() || !session->default_sink(name) || !session->sink(name)) return {};
 
-        index = session.sink_index();
-        previous = observed = session.step_state();
-        const int written = std::clamp(target(previous.percent), 0, 100);
-        if (!previous.muted || session.set_step_mute(false)) {
-            observed.muted = false;
-            step_written = session.set_step_volume(written);
-            if (step_written) {
-                observed.percent = written;
-                if (persist(previous.percent, written)) return observed;
-            }
+    const auto cookie = session->server_cookie();
+    const auto index = session->sink_index();
+    const auto previous = session->step_state();
+    bool recovering = false;
+    const auto observe = [&]() -> VolumeStepResult {
+        if (!recovering) {
+            recovering = true;
+            session.reset();
+            session.emplace();
+            if (!session->open() || !session->matches_server(cookie)) return {};
         }
-    }
-
-    // The write session may have disconnected, and the default may have changed.
-    Session recovery;
-    if (!recovery.open() || !recovery.sink(name) || recovery.sink_index() != index) return observed;
-
-    observed = recovery.step_state();
-    if (previous.muted && !observed.muted && recovery.set_step_mute(true)) observed.muted = true;
-    // Restore mute before bringing back the previous level on a muted sink.
-    if (step_written && (!previous.muted || observed.muted) && recovery.set_step_volume(previous.percent))
-        observed.percent = previous.percent;
-
-    recovery.renew_deadline();
-    if (recovery.sink(name) && recovery.sink_index() == index) return recovery.step_state();
-    return observed;
+        session->renew_deadline();
+        if (!session->sink(name) || session->sink_index() != index) return {};
+        return session->step_state();
+    };
+    return audio::apply_volume_step(previous, target(previous.percent), persist,
+                                    [&](int percent) { return session->set_step_volume(percent); },
+                                    [&](bool muted) { return session->set_step_mute(muted); },
+                                    observe);
 }
 
 int read_default_sink_mute()

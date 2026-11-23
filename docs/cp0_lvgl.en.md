@@ -108,6 +108,8 @@ All `args` below are `std::list<std::string>` with the command at element zero. 
 - `cp0_signal_audio_setup`: `{"set_callback"}`, `{"set_waveform"}` or `{"set_waveform","0"}`, and `{"stop_play"}` set status callbacks, waveform reporting, and stop playback.
 - `cp0_signal_audio_api`: `PlayFile path`, `Play asset`, `PlayPause`, `PlayContinue`, `PlayEnd`, `Cap`, `CapPause`, `CapContinue`, `CapEnd`, `CapFileSave path`, `SetCallback`, `Preload`, `VolumeRead`, `VolumeWrite 0..100`, `DefaultSink` (sink name, or code -1 with empty data when the backend has no real sink), `MuteRead`, `MuteToggle`, `SetSystemSoundNames [up to 3 names]`, `RegisterSystemSounds [1..32 names]`, `SystemSoundPlay 0..2`, `SystemSoundSuspend`, `SystemSoundPrepare`, and `SystemSoundEnable [0|1/on/off...]`. `Preload` loads the mixer client ahead of the first volume action; `Play` resolves a separator-free name as a resource; `PlayFile` uses the supplied path. Errors are negative codes with text.
 
+SDL volume steps use synchronous commands. `VolumeStepRead` returns `id percent muted`. `VolumeStepVolume id 0..100` and `VolumeStepMute id 0|1` echo the applied value and reject a stale mixer ID.
+
 ### PTY
 
 `cp0_signal_pty_api` commands are `Open executable [columns] [rows] [argv...]` (default 80x24, returns a numeric handle), `Read handle [max_read]` (default 4096, max 1 MiB; code is byte count), `Write handle data` (code is byte count), `Resize handle columns rows`, `CheckChild handle` (code 0 running, 1 exited; data is exit code), and `Close handle`. Handles are not PIDs. Linux children use `TERM=vt100` and may drop privileges according to `run_as_user`; teardown kills remaining children.

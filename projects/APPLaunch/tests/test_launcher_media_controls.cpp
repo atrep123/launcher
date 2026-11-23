@@ -39,7 +39,11 @@ bool brightness_config_missing = false;
 bool backlight_write_failed = false;
 int config_writes = 0;
 bool sink_muted = true;
-int mute_toggles = 0;
+bool volume_write_failed = false;
+int mixer_id = 1;
+int mute_writes = 0;
+bool lose_unmute_reply = false;
+bool replace_mixer_on_save = false;
 std::vector<std::string> audio_commands;
 
 std::size_t count_commands(const std::string &command)
@@ -77,16 +81,41 @@ int main()
             const std::string command = arguments.front();
             audio_commands.push_back(command);
 
-            if (command == "MuteRead") {
+            if (command == "VolumeStepRead") {
+                reply(callback, volume_read_failed ? -1 : 0,
+                      std::to_string(mixer_id) + " " + std::to_string(sink_volume) +
+                          (sink_muted ? " 1" : " 0"));
+            } else if (command == "VolumeStepVolume" || command == "VolumeStepMute") {
+                assert(arguments.size() == 3);
+                if (std::stoi(*std::next(arguments.begin())) != mixer_id) {
+                    reply(callback, -1, "");
+                    return;
+                }
+                const int value = std::stoi(arguments.back());
+                if (command == "VolumeStepMute") {
+                    ++mute_writes;
+                    sink_muted = value != 0;
+                    if (!sink_muted && lose_unmute_reply) return;
+                } else if (volume_write_failed) {
+                    reply(callback, -1, "");
+                    return;
+                } else {
+                    sink_volume = value;
+                }
+                reply(callback, 0, arguments.back());
+            } else if (command == "MuteRead") {
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "MuteToggle") {
                 sink_muted = !sink_muted;
-                ++mute_toggles;
                 reply(callback, 0, sink_muted ? "1" : "0");
             } else if (command == "VolumeRead") {
                 reply(callback, volume_read_failed ? -1 : 0, std::to_string(sink_volume));
             } else if (command == "VolumeWrite") {
                 assert(arguments.size() == 2);
+                if (volume_write_failed) {
+                    reply(callback, -1, "");
+                    return;
+                }
                 sink_volume = std::stoi(*std::next(arguments.begin()));
                 reply(callback, 0, std::to_string(sink_volume));
             } else {
@@ -118,6 +147,12 @@ int main()
                     configured_volume = value;
                 reply(callback, 0, "");
             } else if (command == "Save") {
+                if (replace_mixer_on_save) {
+                    replace_mixer_on_save = false;
+                    ++mixer_id;
+                    sink_muted = false;
+                    sink_volume = 50;
+                }
                 reply(callback, config_save_failed ? -1 : 0, "");
             } else {
                 assert(false);
@@ -146,6 +181,30 @@ int main()
             }
         });
 
+    sink_volume = 60;
+    sink_muted = true;
+    volume_write_failed = true;
+    assert(launcher_media_controls::adjust_volume(-10) == 60);
+    assert(sink_volume == 60 && sink_muted && mute_writes == 0);
+    volume_write_failed = false;
+
+    lose_unmute_reply = true;
+    assert(launcher_media_controls::adjust_volume(-10) == 60);
+    assert(sink_volume == 60 && sink_muted && mute_writes == 2);
+    lose_unmute_reply = false;
+
+    sink_volume = 100;
+    assert(launcher_media_controls::adjust_volume(10) == 100);
+    assert(sink_volume == 100 && sink_muted && mute_writes == 2);
+
+    sink_volume = 60;
+    config_save_failed = replace_mixer_on_save = true;
+    assert(launcher_media_controls::adjust_volume(-10) == 50);
+    assert(sink_volume == 50 && !sink_muted && mute_writes == 3);
+    config_save_failed = false;
+    sink_muted = true;
+    mute_writes = 0;
+
     assert(launcher_media_controls::VOLUME_STEP_PERCENT == 10);
 
     // The launcher reads the mixer once at startup and caches it. The worker
@@ -164,8 +223,8 @@ int main()
     assert(sink_volume == 50);
     assert(configured_volume == 50);
     assert(launcher_media_controls::cached_volume() == 50);
-    assert(mute_toggles == 1);
-    assert(count_commands("VolumeRead") == startup_reads + 1);
+    assert(mute_writes == 1);
+    assert(count_commands("VolumeRead") == startup_reads);
 
     // #264: an external app changed the mixer while HOME still had 100%.
     launcher_media_controls::update_cached_volume(100);
@@ -183,7 +242,7 @@ int main()
     const int config_writes_before_failure = config_writes;
     assert(launcher_media_controls::adjust_volume(10) == 10);
     assert(audio_commands.size() == commands_before_failure + 1);
-    assert(audio_commands.back() == "VolumeRead");
+    assert(audio_commands.back() == "VolumeStepRead");
     assert(sink_muted);
     assert(sink_volume == 10);
     assert(config_writes == config_writes_before_failure);
@@ -196,7 +255,7 @@ int main()
     assert(launcher_media_controls::adjust_volume(10) == 70);
     assert(sink_volume == 70);
     assert(configured_volume == 10);
-    assert(launcher_media_controls::cached_volume() == 10);
+    assert(launcher_media_controls::cached_volume() == 70);
     config_save_failed = false;
 
     launcher_media_controls::update_cached_volume(150);

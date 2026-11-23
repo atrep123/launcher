@@ -6,9 +6,7 @@
 
 #include "launcher_media_controls.h"
 
-#if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
 #include "cp0_audio_volume_step.hpp"
-#endif
 
 #include "hal_lvgl_bsp.h"
 #include "model/brightness_operation.hpp"
@@ -19,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <sstream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -188,36 +187,50 @@ bool persist_volume(int previous, int written)
 }
 
 #if !defined(CONFIG_CP0_LVGL_INIT_AUDIO) || defined(HAL_PLATFORM_SDL)
-bool read_mute()
+struct MixerObservation {
+    std::string id;
+    cp0::audio::VolumeStepResult state;
+};
+
+MixerObservation observe_mixer()
 {
-    bool muted = model.muted();
-    cp0_signal_audio_api({"MuteRead"}, [&](int code, std::string data) {
-        int parsed = 0;
-        if (code == 0 && LauncherMediaControlsModel::parse_int(data, parsed) &&
-            (parsed == 0 || parsed == 1)) {
-            muted = parsed != 0;
-            model.set_mute(muted);
+    MixerObservation observed;
+    cp0_signal_audio_api({"VolumeStepRead"}, [&](int code, std::string data) {
+        if (code != 0) return;
+        std::istringstream response(data);
+        std::string id, extra;
+        int volume, mute;
+        if (response >> id >> volume >> mute && !(response >> extra) &&
+            !id.empty() && volume >= 0 && volume <= 100 && (mute == 0 || mute == 1)) {
+            observed = {std::move(id), {volume, mute != 0}};
         }
     });
-    return muted;
+    return observed;
 }
 
-int write_volume(int previous, int percent)
+cp0::audio::VolumeStepResult step_signal_mixer(const std::function<int(int)> &target)
 {
-    percent = LauncherMediaControlsModel::clamp_percent(percent);
-    int written = -1;
-    cp0_signal_audio_api({"VolumeWrite", std::to_string(percent)}, [&](int code, std::string data) {
-        int parsed = 0;
-        if (code == 0 && LauncherMediaControlsModel::parse_percent(data, parsed)) written = parsed;
-    });
-    if (written < 0) return previous;
-    if (!persist_volume(previous, written)) {
-        cp0_signal_audio_api({"VolumeWrite", std::to_string(previous)}, nullptr);
-        return previous;
-    }
-    model.set_volume(written);
-    launcher_media_controls::update_cached_volume(written);
-    return written;
+    const auto previous = observe_mixer();
+    if (previous.state.percent < 0) return {};
+
+    const auto write = [&](const char *command, int value) {
+        bool confirmed = false;
+        const auto text = std::to_string(value);
+        cp0_signal_audio_api({command, previous.id, text}, [&](int code, std::string data) {
+            confirmed = code == 0 && data == text;
+        });
+        return confirmed;
+    };
+    const auto observe = [&]() -> cp0::audio::VolumeStepResult {
+        const auto live = observe_mixer();
+        if (live.id != previous.id) return {};
+        return live.state;
+    };
+    return cp0::audio::apply_volume_step(previous.state, target(previous.state.percent),
+                                         persist_volume,
+                                         [&](int value) { return write("VolumeStepVolume", value); },
+                                         [&](bool muted) { return write("VolumeStepMute", muted); },
+                                         observe);
 }
 #endif
 
@@ -324,21 +337,15 @@ int adjust_volume(int delta_percent)
     const auto target = [delta](int current) { return setup_values::round_volume_percent(current) + delta; };
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
     const auto result = cp0::pulse::step_default_sink_volume(target, persist_volume);
+#else
+    const auto result = step_signal_mixer(target);
+#endif
     if (result.percent >= 0) {
         model.set_mute(result.muted);
         model.set_volume(result.percent);
         update_cached_volume(result.percent);
         return result.percent;
     }
-#else
-    const int current = read_mixer_volume();
-    int result = -1;
-    if (current >= 0) {
-        if (read_mute()) (void)toggle_mute();
-        result = write_volume(current, target(current));
-    }
-    if (result >= 0) return result;
-#endif
 
     // A cached value can still be displayed when the mixer cannot be read.
     const int cached = cached_volume();

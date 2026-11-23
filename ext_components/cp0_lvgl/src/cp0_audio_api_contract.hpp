@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <list>
 #include <functional>
 #include <string>
@@ -30,6 +31,9 @@ enum class ApiCommand {
     Preload,
     VolumeRead,
     VolumeWrite,
+    VolumeStepRead,
+    VolumeStepVolume,
+    VolumeStepMute,
     DefaultSink,
     MuteRead,
     MuteToggle,
@@ -52,6 +56,7 @@ struct ApiRequest
     ApiCommand command = ApiCommand::Play;
     std::string path;
     int value = 0;
+    std::uint64_t mixer_id = 0;
     bool enabled = false;
     std::vector<std::string> names;
 };

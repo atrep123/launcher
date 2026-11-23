@@ -190,6 +190,8 @@ int cp0_time_ntp_set(int enable);
 | `VolumeWrite` | 0..100 | data 为实际值 |
 | `MuteRead` | 无 | data 为 0/1 |
 | `MuteToggle` | 无 | data 为切换后的 0/1 |
+
+SDL 的音量步进使用同步命令。`VolumeStepRead` 返回 `id percent muted`，`VolumeStepVolume id 0..100` 和 `VolumeStepMute id 0|1` 返回实际设置的值，并拒绝过期的混音器 ID。
 | `SetSystemSoundNames` | 最多 3 个名称 | 重置平台索引音效名 |
 | `RegisterSystemSounds` | 1..32 个名称 | 追加应用音效名 |
 | `SystemSoundPlay` | 索引 0..2 | 播放索引音效 |

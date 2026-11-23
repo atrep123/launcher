@@ -55,6 +55,19 @@ void test_path_and_no_argument_commands()
 void test_numeric_and_boolean_commands()
 {
     ApiRequest request;
+    assert(cp0::audio::parse_api_request({"VolumeStepRead"}, request));
+    assert(request.command == ApiCommand::VolumeStepRead);
+    assert(cp0::audio::parse_api_request({"VolumeStepVolume", "25", "100"}, request));
+    assert(request.command == ApiCommand::VolumeStepVolume &&
+           request.mixer_id == 25 && request.value == 100);
+    assert(cp0::audio::parse_api_request({"VolumeStepMute", "25", "1"}, request));
+    assert(request.command == ApiCommand::VolumeStepMute &&
+           request.mixer_id == 25 && request.value == 1);
+    assert(!cp0::audio::parse_api_request({"VolumeStepMute", "0", "1"}, request));
+    assert(!cp0::audio::parse_api_request({"VolumeStepMute", "25", "2"}, request));
+    assert(!cp0::audio::parse_api_request({"VolumeStepVolume", "25x", "99"}, request));
+    assert(!cp0::audio::parse_api_request({"VolumeStepVolume", "25", "101"}, request));
+
     assert(cp0::audio::parse_api_request({"VolumeWrite", "0"}, request));
     assert(request.command == ApiCommand::VolumeWrite && request.value == 0);
     assert(cp0::audio::parse_api_request({"VolumeWrite", "100"}, request));

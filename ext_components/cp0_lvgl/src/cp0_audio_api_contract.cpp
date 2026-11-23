@@ -50,6 +50,7 @@ bool is_no_argument_command(const std::string &command, ApiCommand &parsed)
     else if (command == "CapEnd") parsed = ApiCommand::CapEnd;
     else if (command == "SetCallback") parsed = ApiCommand::SetCallback;
     else if (command == "Preload") parsed = ApiCommand::Preload;
+    else if (command == "VolumeStepRead") parsed = ApiCommand::VolumeStepRead;
     else if (command == "VolumeRead") parsed = ApiCommand::VolumeRead;
     else if (command == "DefaultSink") parsed = ApiCommand::DefaultSink;
     else if (command == "MuteRead") parsed = ApiCommand::MuteRead;
@@ -79,6 +80,15 @@ bool parse_api_request(const std::list<std::string> &args, ApiRequest &request)
             return false;
         request.path = *argument;
         return true;
+    }
+    if (command == "VolumeStepVolume" || command == "VolumeStepMute") {
+        const bool mute = command == "VolumeStepMute";
+        request.command = mute ? ApiCommand::VolumeStepMute : ApiCommand::VolumeStepVolume;
+        if (args.size() != 3) return false;
+        const auto &id = *argument++;
+        const auto parsed = std::from_chars(id.data(), id.data() + id.size(), request.mixer_id);
+        return parsed.ec == std::errc{} && parsed.ptr == id.data() + id.size() &&
+               request.mixer_id != 0 && parse_integer(*argument, 0, mute ? 1 : 100, request.value);
     }
     if (command == "VolumeWrite") {
         request.command = ApiCommand::VolumeWrite;

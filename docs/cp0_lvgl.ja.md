@@ -89,6 +89,8 @@ int cp0_file_read_first_line(const char *path, char *out, int out_size);
 - `cp0_signal_audio_setup`: `{"set_callback"}`、`{"set_waveform"}` または `{"set_waveform","0"}`、`{"stop_play"}`。
 - `cp0_signal_audio_api`: `PlayFile path`、`Play asset`、`PlayPause`、`PlayContinue`、`PlayEnd`、`Cap`、`CapPause`、`CapContinue`、`CapEnd`、`CapFileSave path`、`SetCallback`、`Preload`、`VolumeRead`、`VolumeWrite 0..100`、`DefaultSink`（sink 名。実 sink がない backend は code -1 と空 data）、`MuteRead`、`MuteToggle`、`SetSystemSoundNames [最大3名]`、`RegisterSystemSounds [1..32名]`、`SystemSoundPlay 0..2`、`SystemSoundSuspend`、`SystemSoundPrepare`、`SystemSoundEnable [0/1 または on/off]`。`Preload` は最初の音量操作より前にミキサークライアントを読み込みます。`Play` は区切り文字のない名前を resource として解決し、`PlayFile` は指定パスを使います。
 
+SDL の音量ステップは同期コマンドを使用します。`VolumeStepRead` は `id percent muted` を返します。`VolumeStepVolume id 0..100` と `VolumeStepMute id 0|1` は設定値を返し、古いミキサー ID を拒否します。
+
 ### PTY
 
 `cp0_signal_pty_api` は `Open executable [columns] [rows] [argv...]`（既定 80x24、数値 handle を返す）、`Read handle [max_read]`（既定 4096、最大 1 MiB、code は byte 数）、`Write handle data`、`Resize handle columns rows`、`CheckChild handle`（code 0 は実行中、1 は終了、data は終了コード）、`Close handle` を提供します。handle は PID ではありません。Linux の子プロセスは `TERM=vt100` を設定し、`run_as_user` により権限を下げる場合があります。

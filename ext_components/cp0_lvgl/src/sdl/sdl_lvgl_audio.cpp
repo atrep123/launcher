@@ -11,6 +11,7 @@
 #include "../cp0_signal_registration.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +25,8 @@
 #include <utility>
 
 namespace {
+
+std::atomic<std::uint64_t> next_mixer_id{1};
 
 class AudioSystem
 {
@@ -100,6 +103,13 @@ public:
         };
 #undef map_fun
 
+        using cp0::audio::ApiCommand;
+        if (request.command == ApiCommand::VolumeStepRead ||
+            request.command == ApiCommand::VolumeStepVolume ||
+            request.command == ApiCommand::VolumeStepMute) {
+            VolumeStep(request, callback);
+            return;
+        }
         if (request.command == cp0::audio::ApiCommand::VolumeWrite) {
             VolumeWrite(request.value, callback);
             return;
@@ -141,6 +151,8 @@ private:
     bool capturing_ = false;
     bool cap_paused_ = false;
     bool waveform_enabled_ = false;
+    const std::uint64_t mixer_id_ = next_mixer_id.fetch_add(1);
+    std::mutex mixer_mutex_;
     int volume_ = kDefaultVolume;
     bool muted_ = false;
     std::vector<std::string> system_sound_names_ = {"Ding2.wav", "switch.wav", "enter.wav"};
@@ -329,7 +341,12 @@ private:
     void VolumeRead(arg_t arg, callback_t callback)
     {
         (void)arg;
-        report(callback, 0, std::to_string(volume_));
+        int volume;
+        {
+            std::lock_guard<std::mutex> lock(mixer_mutex_);
+            volume = volume_;
+        }
+        report(callback, 0, std::to_string(volume));
     }
 
     void DefaultSink(arg_t arg, callback_t callback)
@@ -342,21 +359,58 @@ private:
 
     void VolumeWrite(int value, callback_t callback)
     {
-        volume_ = value;
-        report(callback, 0, std::to_string(volume_));
+        {
+            std::lock_guard<std::mutex> lock(mixer_mutex_);
+            volume_ = value;
+        }
+        report(callback, 0, std::to_string(value));
     }
 
     void MuteRead(arg_t arg, callback_t callback)
     {
         (void)arg;
-        report(callback, 0, muted_ ? "1" : "0");
+        bool muted;
+        {
+            std::lock_guard<std::mutex> lock(mixer_mutex_);
+            muted = muted_;
+        }
+        report(callback, 0, muted ? "1" : "0");
     }
 
     void MuteToggle(arg_t arg, callback_t callback)
     {
         (void)arg;
-        muted_ = !muted_;
-        report(callback, 0, muted_ ? "1" : "0");
+        bool muted;
+        {
+            std::lock_guard<std::mutex> lock(mixer_mutex_);
+            muted = muted_ = !muted_;
+        }
+        report(callback, 0, muted ? "1" : "0");
+    }
+
+    void VolumeStep(const cp0::audio::ApiRequest &request, const callback_t &callback)
+    {
+        using cp0::audio::ApiCommand;
+        const bool reading = request.command == ApiCommand::VolumeStepRead;
+        if (!reading && request.mixer_id != mixer_id_) {
+            report(callback, -1, "mixer instance changed");
+            return;
+        }
+        int volume;
+        bool muted;
+        {
+            std::lock_guard<std::mutex> lock(mixer_mutex_);
+            if (request.command == ApiCommand::VolumeStepVolume) volume_ = request.value;
+            if (request.command == ApiCommand::VolumeStepMute) muted_ = request.value != 0;
+            volume = volume_;
+            muted = muted_;
+        }
+        if (reading) {
+            report(callback, 0, std::to_string(mixer_id_) + " " + std::to_string(volume) +
+                                (muted ? " 1" : " 0"));
+        } else {
+            report(callback, 0, std::to_string(request.value));
+        }
     }
 
     void SetSystemSoundNames(arg_t arg, callback_t callback)
