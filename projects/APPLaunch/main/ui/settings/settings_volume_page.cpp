@@ -75,7 +75,7 @@ private:
     {
         return invoke(args,
                       [](std::list<std::string> command, ResponseCallback callback) {
-                          cp0_signal_audio_api(std::move(command), std::move(callback));
+                          cp0::audio::invoke_mixer_api(std::move(command), std::move(callback));
                       },
                       timeout);
     }

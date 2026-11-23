@@ -160,9 +160,10 @@ private:
         if (result->percent < 0) {
             launcher_media_osd().show_mute(result->muted);
         } else {
-            launcher_media_osd().show_level("Volume",
-                result->muted || result->percent == 0 ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX,
-                result->percent);
+            const char *icon = "";
+            if (result->mute_known)
+                icon = result->muted || result->percent == 0 ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX;
+            launcher_media_osd().show_level("Volume", icon, result->percent);
         }
     }
 

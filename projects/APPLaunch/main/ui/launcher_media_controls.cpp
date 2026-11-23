@@ -6,8 +6,6 @@
 
 #include "launcher_media_controls.h"
 
-#include "commount.h"
-
 #include "hal_lvgl_bsp.h"
 #include "model/brightness_operation.hpp"
 #include "model/launcher_media_model.hpp"
@@ -336,19 +334,21 @@ void update_cached_volume(int percent)
 
 cp0::audio::VolumeStepResult adjust_volume(int delta_percent)
 {
-    // Startup may have captured the old saved level. Drain its last pass and
-    // cancel retries before observing or changing the live mixer.
-    cp0_saved_volume_restore_stop();
+    std::lock_guard<std::mutex> lock(cp0::audio::volume_operation_mutex());
     const int delta = delta_percent > 0 ? VOLUME_STEP_PERCENT
                                        : delta_percent < 0 ? -VOLUME_STEP_PERCENT : 0;
-    const auto target = [delta](int current) { return setup_values::round_volume_percent(current) + delta; };
+    const auto target = [delta](int current) {
+        // An initial read failure leaves startup retries active.
+        cp0::audio::cancel_saved_volume_restore();
+        return setup_values::round_volume_percent(current) + delta;
+    };
 #if defined(CONFIG_CP0_LVGL_INIT_AUDIO) && !defined(HAL_PLATFORM_SDL)
     const auto result = cp0::pulse::step_default_sink_volume(target, persist_volume);
 #else
     const auto result = step_signal_mixer(target);
 #endif
     if (result.percent >= 0) {
-        model.set_mute(result.muted);
+        if (result.mute_known) model.set_mute(result.muted);
         model.set_volume(result.percent);
         update_cached_volume(result.percent);
         return result;
@@ -358,7 +358,7 @@ cp0::audio::VolumeStepResult adjust_volume(int delta_percent)
     const int cached = cached_volume();
     const int percent = cached >= 0 ? cached : LauncherMediaControlsModel::clamp_percent(
         read_config_int("volume", model.volume_or(50)));
-    return {percent, model.muted()};
+    return {percent, false, false};
 }
 
 int adjust_brightness(int delta_percent)
@@ -378,13 +378,14 @@ int adjust_brightness(int delta_percent)
 
 bool toggle_mute()
 {
-    cp0_saved_volume_restore_stop();
+    std::lock_guard<std::mutex> lock(cp0::audio::volume_operation_mutex());
     const bool previous = model.muted();
     bool muted = previous;
     cp0_signal_audio_api({"MuteToggle"}, [&](int code, std::string data) {
         int parsed = 0;
         if (code == 0 && LauncherMediaControlsModel::parse_int(data, parsed) &&
             (parsed == 0 || parsed == 1)) {
+            cp0::audio::cancel_saved_volume_restore();
             muted = parsed != 0;
             model.set_mute(muted);
         }

@@ -6,6 +6,7 @@
 
 #include "hal_lvgl_bsp.h"
 #include "commount.h"
+#include "cp0_audio_volume_step.hpp"
 #include "cp0_lvgl_app.h"
 #include "cp0_network_api_contract.hpp"
 #include "cp0_integer_codec.hpp"
@@ -20,6 +21,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 
 #define def_hal_fun(arg, name) eventpp::CallbackList<arg> name;
 #include "signal_register_plan.h"
@@ -155,6 +157,8 @@ static int config_get_int(const char *key, int default_val)
 // must not write the volume it captured over the new session.
 namespace {
 
+std::mutex mixer_operation_mutex;
+
 struct SavedVolumeRestore
 {
     std::mutex lifecycle_mutex;
@@ -224,6 +228,7 @@ struct SavedVolumeRestore
         state.target = volume;
 
         while (clock::now() < deadline) {
+            std::unique_lock<std::mutex> operation_lock(mixer_operation_mutex);
             {
                 std::lock_guard<std::mutex> lock(mutex);
                 if (stop)
@@ -260,6 +265,7 @@ struct SavedVolumeRestore
                     cp0_signal_audio_api({"VolumeWrite", written}, nullptr);
                 });
             }
+            operation_lock.unlock();
             if (wait_for_next_pass())
                 return;
         }
@@ -269,6 +275,24 @@ struct SavedVolumeRestore
 SavedVolumeRestore g_saved_volume_restore;
 
 } // namespace
+
+std::mutex &cp0::audio::volume_operation_mutex()
+{
+    return mixer_operation_mutex;
+}
+
+void cp0::audio::invoke_mixer_api(std::list<std::string> args,
+                                 std::function<void(int, std::string)> callback)
+{
+    std::unique_lock<std::mutex> lock(volume_operation_mutex(), std::defer_lock);
+    if (!args.empty() && args.front() == "VolumeWrite") lock.lock();
+    cp0_signal_audio_api(std::move(args), std::move(callback));
+}
+
+void cp0::audio::cancel_saved_volume_restore()
+{
+    g_saved_volume_restore.request_stop();
+}
 
 static void saved_volume_restore(int val)
 {
