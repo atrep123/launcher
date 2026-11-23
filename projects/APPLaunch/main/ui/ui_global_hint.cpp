@@ -41,7 +41,12 @@
 #include "model/global_hint_policy.hpp"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdlib>
+#include <deque>
+#include <mutex>
+#include <optional>
+#include <thread>
 
 #include "input_keys.h"
 
@@ -70,6 +75,109 @@ namespace ui_global_hint {
 
 namespace {
 std::atomic<bool> g_external_esc_hint_visible{false};
+
+class VolumeShortcuts
+{
+public:
+    ~VolumeShortcuts() { stop_worker(); }
+
+    void enqueue(int delta)
+    {
+        if (!timer_) {
+            timer_ = lv_timer_create([](lv_timer_t *timer) {
+                static_cast<VolumeShortcuts *>(lv_timer_get_user_data(timer))->show_result();
+            }, 16, this);
+            if (!timer_) return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!worker_.joinable()) {
+                stopping_ = false;
+                worker_ = std::thread([this] { run(); });
+            }
+            pending_.push_back(delta);
+        }
+        wake_.notify_one();
+        lv_timer_resume(timer_);
+    }
+
+    void shutdown()
+    {
+        if (timer_) {
+            lv_timer_delete(timer_);
+            timer_ = nullptr;
+        }
+        stop_worker();
+    }
+
+private:
+    void stop_worker()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+            pending_.clear();
+            result_.reset();
+        }
+        wake_.notify_one();
+        if (worker_.joinable()) worker_.join();
+    }
+
+    void run()
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (true) {
+            wake_.wait(lock, [this] { return stopping_ || !pending_.empty(); });
+            if (stopping_) return;
+
+            const int delta = pending_.front();
+            pending_.pop_front();
+            busy_ = true;
+            lock.unlock();
+            std::optional<cp0::audio::VolumeStepResult> result;
+            try {
+                // A negative percent carries a mute-only result to the OSD.
+                result = delta == 0
+                    ? cp0::audio::VolumeStepResult{-1, launcher_media_controls::toggle_mute()}
+                    : launcher_media_controls::adjust_volume(delta);
+            } catch (...) {
+            }
+            lock.lock();
+            if (result && !stopping_) result_ = result;
+            busy_ = false;
+        }
+    }
+
+    void show_result()
+    {
+        std::optional<cp0::audio::VolumeStepResult> result;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            result = std::exchange(result_, std::nullopt);
+            if (!busy_ && pending_.empty()) lv_timer_pause(timer_);
+        }
+        if (!result) return;
+        if (result->percent < 0) {
+            launcher_media_osd().show_mute(result->muted);
+        } else {
+            launcher_media_osd().show_level("Volume",
+                result->muted || result->percent == 0 ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX,
+                result->percent);
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::deque<int> pending_;
+    // A burst only needs its latest completed result painted.
+    std::optional<cp0::audio::VolumeStepResult> result_;
+    bool busy_ = false;
+    bool stopping_ = false;
+    std::thread worker_;
+    lv_timer_t *timer_ = nullptr;
+};
+
+VolumeShortcuts g_volume_shortcuts;
 }
 
 bool external_esc_hint_visible() noexcept
@@ -84,6 +192,7 @@ void reset_external_esc_hint() noexcept
 
 void shutdown()
 {
+    g_volume_shortcuts.shutdown();
     esc_hold_hint_controller().shutdown();
     launcher_toast().shutdown();
     launcher_media_osd().shutdown();
@@ -123,13 +232,11 @@ void on_key(const struct key_item *elm) noexcept
             const int delta = action == GlobalHintAction::VOLUME_UP
                                   ? launcher_media_controls::VOLUME_STEP_PERCENT
                                   : -launcher_media_controls::VOLUME_STEP_PERCENT;
-            const int pct = launcher_media_controls::adjust_volume(delta);
-            launcher_media_osd().show_level(
-                "Volume", pct == 0 ? LV_SYMBOL_MUTE : LV_SYMBOL_VOLUME_MAX, pct);
+            g_volume_shortcuts.enqueue(delta);
             return;
         }
         case GlobalHintAction::TOGGLE_MUTE:
-            launcher_media_osd().show_mute(launcher_media_controls::toggle_mute());
+            g_volume_shortcuts.enqueue(0);
             return;
         case GlobalHintAction::RESET_LCD:
             std::system("echo 1 > /sys/class/graphics/fb0/device/reset");

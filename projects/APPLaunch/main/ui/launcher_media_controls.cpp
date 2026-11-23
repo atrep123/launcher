@@ -7,7 +7,6 @@
 #include "launcher_media_controls.h"
 
 #include "commount.h"
-#include "cp0_audio_volume_step.hpp"
 
 #include "hal_lvgl_bsp.h"
 #include "model/brightness_operation.hpp"
@@ -335,7 +334,7 @@ void update_cached_volume(int percent)
     g_startup_volume_cache.update(LauncherMediaControlsModel::clamp_percent(percent));
 }
 
-int adjust_volume(int delta_percent)
+cp0::audio::VolumeStepResult adjust_volume(int delta_percent)
 {
     // Startup may have captured the old saved level. Drain its last pass and
     // cancel retries before observing or changing the live mixer.
@@ -352,13 +351,14 @@ int adjust_volume(int delta_percent)
         model.set_mute(result.muted);
         model.set_volume(result.percent);
         update_cached_volume(result.percent);
-        return result.percent;
+        return result;
     }
 
     // A cached value can still be displayed when the mixer cannot be read.
     const int cached = cached_volume();
-    return cached >= 0 ? cached : LauncherMediaControlsModel::clamp_percent(
+    const int percent = cached >= 0 ? cached : LauncherMediaControlsModel::clamp_percent(
         read_config_int("volume", model.volume_or(50)));
+    return {percent, model.muted()};
 }
 
 int adjust_brightness(int delta_percent)

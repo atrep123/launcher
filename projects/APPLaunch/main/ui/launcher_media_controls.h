@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "cp0_audio_volume_step.hpp"
 #include "model/setup_value_policy.hpp"
 
 namespace launcher_media_controls {
@@ -28,7 +29,7 @@ void stop_volume_cache();
 /* Record a value that was just written to the mixer, or read back from it. */
 void update_cached_volume(int percent);
 
-int adjust_volume(int delta_percent);
+cp0::audio::VolumeStepResult adjust_volume(int delta_percent);
 int adjust_brightness(int delta_percent);
 bool toggle_mute();
 

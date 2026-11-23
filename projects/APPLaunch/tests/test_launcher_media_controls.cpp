@@ -136,7 +136,7 @@ void test_startup_restore_during_shortcut()
     assert(started.wait_for(5s) == std::future_status::ready);
     const bool overlapped = step_ready.wait_for(250ms) == std::future_status::ready;
     release_restore.set_value();
-    const int shown = shortcut.get();
+    const int shown = shortcut.get().percent;
     cp0_saved_volume_restore_stop();
     cp0_signal_audio_api.remove(audio);
     cp0_signal_config_api.remove(config);
@@ -265,22 +265,23 @@ int main()
     sink_volume = 60;
     sink_muted = true;
     volume_write_failed = true;
-    assert(launcher_media_controls::adjust_volume(-10) == 60);
+    assert(launcher_media_controls::adjust_volume(-10).percent == 60);
     assert(sink_volume == 60 && sink_muted && mute_writes == 0);
     volume_write_failed = false;
 
     lose_unmute_reply = true;
-    assert(launcher_media_controls::adjust_volume(-10) == 60);
+    assert(launcher_media_controls::adjust_volume(-10).percent == 60);
     assert(sink_volume == 60 && sink_muted && mute_writes == 2);
     lose_unmute_reply = false;
 
     sink_volume = 100;
-    assert(launcher_media_controls::adjust_volume(10) == 100);
+    const auto saturated = launcher_media_controls::adjust_volume(10);
+    assert(saturated.percent == 100 && saturated.muted);
     assert(sink_volume == 100 && sink_muted && mute_writes == 2);
 
     sink_volume = 60;
     config_save_failed = replace_mixer_on_save = true;
-    assert(launcher_media_controls::adjust_volume(-10) == 50);
+    assert(launcher_media_controls::adjust_volume(-10).percent == 50);
     assert(sink_volume == 50 && !sink_muted && mute_writes == 3);
     config_save_failed = false;
     sink_muted = true;
@@ -299,7 +300,7 @@ int main()
     assert(startup_reads >= 2);
 
     // Keep upstream rounding and unmute behavior for a live level off the step grid.
-    assert(launcher_media_controls::adjust_volume(-10) == 50);
+    assert(launcher_media_controls::adjust_volume(-10).percent == 50);
     assert(!sink_muted);
     assert(sink_volume == 50);
     assert(configured_volume == 50);
@@ -311,7 +312,7 @@ int main()
     launcher_media_controls::update_cached_volume(100);
     configured_volume = 100;
     sink_volume = 20;
-    assert(launcher_media_controls::adjust_volume(-10) == 10);
+    assert(launcher_media_controls::adjust_volume(-10).percent == 10);
     assert(sink_volume == 10);
     assert(configured_volume == 10);
     assert(launcher_media_controls::cached_volume() == 10);
@@ -321,7 +322,7 @@ int main()
     sink_muted = true;
     const auto commands_before_failure = audio_commands.size();
     const int config_writes_before_failure = config_writes;
-    assert(launcher_media_controls::adjust_volume(10) == 10);
+    assert(launcher_media_controls::adjust_volume(10).percent == 10);
     assert(audio_commands.size() == commands_before_failure + 1);
     assert(audio_commands.back() == "VolumeStepRead");
     assert(sink_muted);
@@ -333,7 +334,7 @@ int main()
     // A failed save restores the previous mixer and configuration values.
     sink_volume = 70;
     config_save_failed = true;
-    assert(launcher_media_controls::adjust_volume(10) == 70);
+    assert(launcher_media_controls::adjust_volume(10).percent == 70);
     assert(sink_volume == 70);
     assert(configured_volume == 10);
     assert(launcher_media_controls::cached_volume() == 70);
