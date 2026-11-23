@@ -77,17 +77,19 @@ class VolumeShortcuts
 public:
     void start() { worker_.start(); }
 
-    void enqueue(int delta)
+    void enqueue(int delta, uint32_t repeat_key = 0)
     {
+        if (!worker_.enqueue(delta, repeat_key)) return;
         if (!timer_) {
             timer_ = lv_timer_create([](lv_timer_t *timer) {
                 static_cast<VolumeShortcuts *>(lv_timer_get_user_data(timer))->show_result();
             }, 16, this);
             if (!timer_) return;
         }
-        worker_.enqueue(delta);
         lv_timer_resume(timer_);
     }
+
+    void release(uint32_t key) { worker_.release(key); }
 
     void shutdown()
     {
@@ -155,6 +157,8 @@ void on_key(const struct key_item *elm) noexcept
     try {
     if (elm == NULL) return;
 
+    if (elm->key_state == KBD_KEY_RELEASED) g_volume_shortcuts.release(elm->key_code);
+
     if (esc_hold_hint_controller().handle(elm))
         return;
 
@@ -184,7 +188,8 @@ void on_key(const struct key_item *elm) noexcept
             const int delta = action == GlobalHintAction::VOLUME_UP
                                   ? launcher_media_controls::VOLUME_STEP_PERCENT
                                   : -launcher_media_controls::VOLUME_STEP_PERCENT;
-            g_volume_shortcuts.enqueue(delta);
+            g_volume_shortcuts.enqueue(delta,
+                elm->key_state == KBD_KEY_REPEATED ? elm->key_code : 0);
             return;
         }
         case GlobalHintAction::TOGGLE_MUTE:

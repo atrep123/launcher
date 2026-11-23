@@ -5,6 +5,7 @@
  */
 
 #include "../main/ui/launcher_media_controls.h"
+#include "../main/ui/model/volume_shortcut_worker.hpp"
 
 #include "commount.h"
 #include "hal_lvgl_bsp.h"
@@ -540,12 +541,26 @@ int main()
     sink_volume = configured_volume = 60;
     sink_muted = true;
     config_save_throws = true;
-    const auto rolled_back = launcher_media_controls::adjust_volume(-10);
-    assert(rolled_back.percent == 60 && rolled_back.mute_known && rolled_back.muted);
-    assert(sink_volume == 60 && sink_muted && configured_volume == 60);
-    config_save_throws = false;
-    assert(launcher_media_controls::adjust_volume(-10).percent == 50);
-    assert(sink_volume == 50 && !sink_muted && configured_volume == 50);
+    std::promise<void> next_step;
+    int steps = 0;
+    VolumeShortcutWorker worker([&](int delta) {
+        const auto result = launcher_media_controls::adjust_volume(delta);
+        if (++steps == 1) {
+            assert(result.percent == 60 && result.mute_known && result.muted);
+            assert(sink_volume == 60 && sink_muted && configured_volume == 60);
+            config_save_throws = false;
+        } else {
+            assert(result.percent == 50);
+            assert(sink_volume == 50 && !sink_muted && configured_volume == 50);
+            next_step.set_value();
+        }
+        return result;
+    });
+    worker.start();
+    assert(worker.enqueue(-10));
+    assert(worker.enqueue(-10));
+    assert(next_step.get_future().wait_for(std::chrono::seconds(5)) == std::future_status::ready);
+    worker.stop();
     std::fprintf(stderr, "throwing persist: restored muted 60; next step saved 50\n");
 
     cp0_signal_audio_api.remove(audio);
