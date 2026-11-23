@@ -30,6 +30,7 @@ pa_operation *read_sink(pa_context *context, const char *name,
         read_on_original = context == initial_context;
         if (scenario == "unreadable") return nullptr;
     }
+    if (scenario == "unmute-reply-lost" && reads == 3) return nullptr;
     return pa_context_get_sink_info_by_name(context, name, callback, data);
 }
 
@@ -53,7 +54,13 @@ pa_operation *write_volume(pa_context *context, uint32_t index, const pa_cvolume
 pa_operation *write_mute(pa_context *context, uint32_t index, int mute,
                          pa_context_success_cb_t callback, void *data)
 {
-    if (!mute) ++unmutes;
+    if (!mute) {
+        ++unmutes;
+        if (scenario == "unmute-reply-lost") callback = nullptr;
+    } else if (scenario == "remute-ack-noop") {
+        // The server acknowledges remute while leaving the sink audible.
+        mute = 0;
+    }
     return pa_context_set_sink_mute_by_index(context, index, mute, callback, data);
 }
 } // namespace
@@ -77,7 +84,10 @@ int main(int argc, char **argv)
     int saves = 0;
     const auto result = cp0::pulse::step_default_sink_volume(
         [](int current) { return current - 10; },
-        [&](int, int) { ++saves; return scenario != "rollback"; });
+        [&](int, int) {
+            ++saves;
+            return scenario != "rollback" && scenario != "remute-ack-noop";
+        });
     const int live = cp0::pulse::read_default_sink_volume();
     const int mute = cp0::pulse::read_default_sink_mute();
     std::fprintf(stderr, "%s: level=%d mute=%d writes=%d unmutes=%d saves=%d read_on_original=%d\n",
@@ -86,6 +96,15 @@ int main(int argc, char **argv)
     if (scenario == "rollback") {
         return !(read_on_original && live == 120 && mute == 0 &&
                  result.percent == 100 && writes == 2 && saves == 1);
+    }
+    if (scenario == "remute-ack-noop") {
+        return !(read_on_original && live == 90 && mute == 0 && writes == 1 &&
+                 unmutes == 1 && saves == 1 && result.percent == 90 &&
+                 result.mute_known && !result.muted);
+    }
+    if (scenario == "unmute-reply-lost") {
+        return !(read_on_original && live == 90 && mute == 0 && writes == 1 &&
+                 unmutes == 1 && saves == 0 && result.percent == 90 && !result.mute_known);
     }
     return !(read_on_original && result.muted && unmutes == 0 && saves == 0 &&
              result.percent == 100 && live == 100 && mute == 1 &&

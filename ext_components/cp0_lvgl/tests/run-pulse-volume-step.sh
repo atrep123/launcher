@@ -22,7 +22,7 @@ compiler=${CXX:-c++}
 pulseaudio --daemonize=yes -n --exit-idle-time=-1 \
     --log-target="file:$temp/server.log" -F "$temp/pulse.conf"
 
-for scenario in ack-noop unreadable; do
+for scenario in ack-noop unreadable remute-ack-noop unmute-reply-lost; do
     pactl set-sink-volume volume_step_test 100%
     pactl set-sink-mute volume_step_test 1
     "$temp/test" "$scenario"

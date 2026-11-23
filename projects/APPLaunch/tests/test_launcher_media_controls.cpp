@@ -10,6 +10,7 @@
 #include "hal_lvgl_bsp.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cstddef>
@@ -18,6 +19,7 @@
 #include <future>
 #include <iterator>
 #include <list>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -30,6 +32,7 @@ int sink_volume = 63;
 int configured_volume = 80;
 bool volume_read_failed = false;
 bool config_save_failed = false;
+bool config_save_throws = false;
 int backlight_maximum = 255;
 int backlight_value = 102;
 int configured_brightness = 102;
@@ -146,6 +149,107 @@ void test_startup_restore_during_shortcut()
     assert(!overlapped && level == 50 && !muted && saved == 50 && shown == 50);
 }
 
+void test_settings_write_during_shortcut()
+{
+    using namespace std::chrono_literals;
+
+    int level = 60;
+    int unmuted_level = -1;
+    int saved = -1;
+    int level_at_save = -1;
+    std::promise<void> verified, release_unmute, settings_offered;
+    auto at_unmute = verified.get_future();
+    auto release = release_unmute.get_future();
+    auto offered = settings_offered.get_future();
+
+    const auto audio = cp0_signal_audio_api.append([&](auto args, auto callback) {
+        const auto &command = args.front();
+        if (command == "VolumeStepRead") {
+            reply(callback, 0, "1 60 1");
+        } else if (command == "VolumeStepVolume" || command == "VolumeWrite") {
+            level = std::stoi(args.back());
+            reply(callback, 0, args.back());
+        } else {
+            assert(command == "VolumeStepMute" && args.back() == "0");
+            verified.set_value();
+            assert(release.wait_for(5s) == std::future_status::ready);
+            unmuted_level = level;
+            reply(callback, 0, "0");
+        }
+    });
+    const auto config = cp0_signal_config_api.append([&](auto args, auto callback) {
+        assert(args.front() == "SetManyAndSave");
+        saved = std::stoi(args.back());
+        level_at_save = level;
+        reply(callback, 0, "");
+    });
+
+    auto shortcut = std::async(std::launch::async, [] {
+        return launcher_media_controls::adjust_volume(-10);
+    });
+    assert(at_unmute.wait_for(5s) == std::future_status::ready);
+    auto settings = std::async(std::launch::async, [&] {
+        settings_offered.set_value();
+        cp0::audio::invoke_mixer_api({"VolumeWrite", "60"}, nullptr);
+    });
+    assert(offered.wait_for(5s) == std::future_status::ready);
+    const bool overlapped = settings.wait_for(250ms) == std::future_status::ready;
+    release_unmute.set_value();
+    const auto result = shortcut.get();
+    settings.get();
+    cp0_signal_audio_api.remove(audio);
+    cp0_signal_config_api.remove(config);
+
+    std::fprintf(stderr, "Settings write: overlap=%d level at unmute=%d level at save=%d saved=%d\n",
+                 overlapped, unmuted_level, level_at_save, saved);
+    assert(!overlapped && unmuted_level == 50 && level_at_save == 50 &&
+           saved == 50 && result.percent == 50 && level == 60);
+}
+
+void test_startup_restore_after_failed_read()
+{
+    using namespace std::chrono_literals;
+
+    std::atomic<bool> hardware_ready{false};
+    std::promise<void> scanned, restored;
+    auto first_pass = scanned.get_future();
+    auto written = restored.get_future();
+    const auto audio = cp0_signal_audio_api.append([&](auto args, auto callback) {
+        const auto &command = args.front();
+        if (command == "DefaultSink") {
+            if (hardware_ready.load()) {
+                reply(callback, 0, "alsa_output.platform-sound.stereo-fallback");
+            } else {
+                scanned.set_value();
+                reply(callback, 0, "auto_null");
+            }
+        } else if (command == "VolumeStepRead") {
+            reply(callback, -1, "");
+        } else if (command == "VolumeRead") {
+            reply(callback, 0, "20");
+        } else {
+            assert(command == "VolumeWrite" && args.back() == "60");
+            restored.set_value();
+        }
+    });
+    const auto config = cp0_signal_config_api.append([](auto args, auto callback) {
+        assert(args.front() == "GetInt");
+        reply(callback, 0, *std::next(args.begin()) == "volume" ? "60" : "-1");
+    });
+
+    init_lvgl_saved_settings();
+    assert(first_pass.wait_for(5s) == std::future_status::ready);
+    const auto result = launcher_media_controls::adjust_volume(-10);
+    hardware_ready.store(true);
+    const bool recovered = written.wait_for(2s) == std::future_status::ready;
+    cp0_saved_volume_restore_stop();
+    cp0_signal_audio_api.remove(audio);
+    cp0_signal_config_api.remove(config);
+
+    std::fprintf(stderr, "cold start: restored after failed read=%d\n", recovered);
+    assert(recovered && !result.mute_known);
+}
+
 } // namespace
 
 int main()
@@ -213,6 +317,7 @@ int main()
                     sink_muted = false;
                     sink_volume = 50;
                 }
+                if (config_save_throws) throw std::runtime_error("injected persistence failure");
                 if (!config_save_failed) configured_volume = std::stoi(arguments.back());
                 reply(callback, config_save_failed ? -1 : 0, "");
             } else if (command == "GetInt") {
@@ -432,7 +537,20 @@ int main()
     backlight_write_failed = false;
     assert(config_writes == previous_config_writes);
 
+    sink_volume = configured_volume = 60;
+    sink_muted = true;
+    config_save_throws = true;
+    const auto rolled_back = launcher_media_controls::adjust_volume(-10);
+    assert(rolled_back.percent == 60 && rolled_back.mute_known && rolled_back.muted);
+    assert(sink_volume == 60 && sink_muted && configured_volume == 60);
+    config_save_throws = false;
+    assert(launcher_media_controls::adjust_volume(-10).percent == 50);
+    assert(sink_volume == 50 && !sink_muted && configured_volume == 50);
+    std::fprintf(stderr, "throwing persist: restored muted 60; next step saved 50\n");
+
     cp0_signal_audio_api.remove(audio);
     cp0_signal_config_api.remove(config);
     test_startup_restore_during_shortcut();
+    test_settings_write_during_shortcut();
+    test_startup_restore_after_failed_read();
 }
